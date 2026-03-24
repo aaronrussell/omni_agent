@@ -578,6 +578,7 @@ defmodule Omni.Agent.Server do
       model: server.state.model,
       message: last_assistant,
       messages: server.pending_messages,
+      output: if(server.last_response, do: server.last_response.output),
       stop_reason: if(server.last_response, do: server.last_response.stop_reason, else: :stop),
       usage: server.pending_usage
     }
