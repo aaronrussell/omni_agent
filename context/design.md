@@ -1,4 +1,4 @@
-# OmniAgent Design
+# Omni Agent Design
 
 **Status:** Implemented
 **Last updated:** March 2026
@@ -7,7 +7,7 @@
 
 ## Overview
 
-OmniAgent is a standalone Elixir package that provides a GenServer-based building block for stateful, long-running LLM interactions. It wraps Omni's `stream_text`/`generate_text` pipeline in a supervised process that manages its own conversation context, executes tools, and communicates with callers via process messages.
+Omni Agent is a standalone Elixir package that provides a GenServer-based building block for stateful, long-running LLM interactions. It wraps Omni's `stream_text`/`generate_text` pipeline in a supervised process that manages its own conversation context, executes tools, and communicates with callers via process messages.
 
 The core idea: an agent is a process that holds a model, a context (system prompt, messages, tools), and user-defined state. The outside world sends prompts in; the agent works on them (potentially across multiple LLM steps) and sends events back. Users control agent behaviour through a set of lifecycle callbacks.
 
@@ -32,12 +32,12 @@ The core idea: an agent is a process that holds a model, a context (system promp
 
 ## Relationship to Omni
 
-OmniAgent depends on the `omni` package and builds on top of its stateless API. Omni provides:
+Omni Agent depends on the `omni` package and builds on top of its stateless API. Omni provides:
 
 - **`Omni.Loop`** -- handles tool auto-execution and structured output validation within a single `stream_text` / `generate_text` call. Stateless, lazy stream pipeline.
 - **`Omni.stream_text/3` / `Omni.generate_text/3`** -- stateless functions. Caller provides context, gets a response, manages conversation history externally.
 
-OmniAgent adds:
+Omni Agent adds:
 
 - **State management** -- the agent holds a `%Context{}` so the caller doesn't have to thread messages through.
 - **Its own loop** -- after each LLM step completes, the agent decides whether to continue (re-prompt) or stop, based on user-defined callbacks.
@@ -65,14 +65,14 @@ The agent does **not** use `Omni.Loop` for tool execution. It calls `stream_text
 
 ### Dependency surface
 
-OmniAgent imports the following from `omni`:
+Omni Agent imports the following from `omni`:
 
 - `Omni.stream_text/3` — the sole integration point for LLM requests (called in `Step`)
 - `Omni.{Context, Message, Model, Response, Tool, Usage}` — data structs
 - `Omni.Content.{Text, Thinking, ToolResult, ToolUse}` — content blocks
 - `Omni.Tool.Runner` — parallel tool execution (called in `Executor`)
 
-The dependency is strictly one-directional. Core Omni has zero knowledge of OmniAgent.
+The dependency is strictly one-directional. Core Omni has zero knowledge of Omni Agent.
 
 ---
 
@@ -675,7 +675,7 @@ When `handle_error/2` returns `{:retry, state}`, the agent stays `:running` and 
 
 The agent provides mechanism; users provide policy:
 
-| OmniAgent provides | Users build on top |
+| Omni Agent provides | Users build on top |
 |---|---|
 | Stateful conversation process | Domain-specific system prompts |
 | Dynamic tool management | Which tools to give the agent when |

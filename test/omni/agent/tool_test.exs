@@ -1,5 +1,5 @@
 defmodule Omni.Agent.ToolTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "tool use auto-loop" do
     test "executes tool and loops back to get final text response" do

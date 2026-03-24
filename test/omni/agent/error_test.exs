@@ -1,5 +1,5 @@
 defmodule Omni.Agent.ErrorTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "handle_error" do
     test "default handle_error stops with :error event on step failure" do

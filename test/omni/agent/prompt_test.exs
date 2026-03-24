@@ -1,5 +1,5 @@
 defmodule Omni.Agent.PromptTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "basic prompt/response" do
     test "streams text events and emits :done with a valid response" do

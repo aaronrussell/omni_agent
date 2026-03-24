@@ -1,5 +1,5 @@
 defmodule Omni.Agent.SteeringTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "prompt while running" do
     test "stages prompt and returns :ok" do

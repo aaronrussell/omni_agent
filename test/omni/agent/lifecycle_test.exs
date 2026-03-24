@@ -1,5 +1,5 @@
 defmodule Omni.Agent.LifecycleTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "custom init callback" do
     test "init sets private" do

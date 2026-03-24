@@ -1,5 +1,5 @@
 defmodule Omni.Agent.StateTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "get_state" do
     test "returns the full state struct" do

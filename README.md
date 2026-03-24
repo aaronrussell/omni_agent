@@ -1,4 +1,4 @@
-# OmniAgent
+# Omni Agent
 
 **Stateful LLM agents for Elixir.**
 Multi-turn conversations with lifecycle callbacks, tool approval, and steering.
@@ -14,7 +14,7 @@ Multi-turn conversations with lifecycle callbacks, tool approval, and steering.
 
 ## Installation
 
-Add OmniAgent to your dependencies:
+Add Omni Agent to your dependencies:
 
 ```elixir
 def deps do
@@ -24,7 +24,7 @@ def deps do
 end
 ```
 
-OmniAgent depends on `omni`, which provides the LLM API layer. Configure your
+Omni Agent depends on `omni`, which provides the LLM API layer. Configure your
 provider API keys as described in the [Omni README](https://github.com/aaronrussell/omni#installation).
 
 ## Quick start

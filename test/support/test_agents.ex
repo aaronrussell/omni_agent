@@ -1,4 +1,4 @@
-defmodule OmniAgent.TestAgents do
+defmodule Omni.Agent.TestAgents do
   @moduledoc false
 
   defmodule WithInit do

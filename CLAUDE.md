@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OmniAgent is an Elixir package that provides a GenServer-based building block for stateful, long-running LLM interactions. It builds on top of the [`omni`](https://github.com/aaronrussell/omni) package, wrapping its stateless `stream_text`/`generate_text` API in a supervised process that manages conversation context, executes tools, and communicates with callers via process messages.
+Omni Agent is an Elixir package that provides a GenServer-based building block for stateful, long-running LLM interactions. It builds on top of the [`omni`](https://github.com/aaronrussell/omni) package, wrapping its stateless `stream_text`/`generate_text` API in a supervised process that manages conversation context, executes tools, and communicates with callers via process messages.
 
 The package is separated from `omni` because the stateless LLM API layer (omni) is stable, while the agent layer is under active experimentation and rapid iteration.
 
@@ -114,7 +114,7 @@ lib/omni/
 
 ## Testing
 
-Tests live in `test/omni/agent/` and use `Req.Test.stub/2` with a plug to simulate HTTP responses. Tests exercise the full agent lifecycle through the public `Omni.Agent` API: prompt/response, tool execution, pause/resume, cancel, error handling, continuation, steering, set_state, and more. A shared `OmniAgent.AgentCase` (`test/support/agent_case.ex`) provides helpers for stubbing fixtures, starting agents, and collecting events.
+Tests live in `test/omni/agent/` and use `Req.Test.stub/2` with a plug to simulate HTTP responses. Tests exercise the full agent lifecycle through the public `Omni.Agent` API: prompt/response, tool execution, pause/resume, cancel, error handling, continuation, steering, set_state, and more. A shared `Omni.Agent.AgentCase` (`test/support/agent_case.ex`) provides helpers for stubbing fixtures, starting agents, and collecting events.
 
 **Fixtures:** SSE fixtures in `test/support/fixtures/sse/` are real Anthropic API recordings copied from the `omni` package. Three fixtures: `anthropic_text.sse` (text response), `anthropic_tool_use.sse` (tool use response), and `anthropic_thinking.sse` (thinking response). Tests compose these via `stub_fixture` (single response) and `stub_sequence` (ordered responses for multi-step scenarios).
 

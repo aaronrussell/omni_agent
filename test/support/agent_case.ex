@@ -1,4 +1,4 @@
-defmodule OmniAgent.AgentCase do
+defmodule Omni.Agent.AgentCase do
   @moduledoc false
 
   use ExUnit.CaseTemplate
@@ -9,7 +9,7 @@ defmodule OmniAgent.AgentCase do
       alias Omni.{Context, Response}
       alias Omni.Content.{Text, ToolResult, ToolUse}
 
-      alias OmniAgent.TestAgents.{
+      alias Omni.Agent.TestAgents.{
         WithInit,
         FailInit,
         CustomTurn,

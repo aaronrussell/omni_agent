@@ -1,5 +1,5 @@
 defmodule Omni.Agent.PauseResumeTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "pause/resume" do
     test "{:pause, reason, state} from handle_tool_use pauses agent" do

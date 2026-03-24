@@ -1,5 +1,5 @@
 defmodule Omni.Agent.ContinuationTest do
-  use OmniAgent.AgentCase, async: true
+  use Omni.Agent.AgentCase, async: true
 
   describe "continuation" do
     test "{:continue, prompt, state} loops for 3 turns" do
