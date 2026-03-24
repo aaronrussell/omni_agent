@@ -28,3 +28,8 @@ The agent internals were simplified — the loop hierarchy was flattened from th
 - **`handle_tool_call`** renamed to **`handle_tool_use`** — aligns with `%ToolUse{}` and Anthropic terminology.
 - **`:turn` event** renamed to **`:continue` event** — avoids collision with "turn" as the top-level concept.
 - **Unified tool use flow** — all tool uses flow through `handle_tool_use` with four return variants (`:execute`, `:reject`, `:result`, `:pause`). No more `has_executable_tools?` all-or-nothing check.
+
+---
+
+[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.1.0...HEAD
+[1.2.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.1.0
