@@ -52,7 +52,8 @@ defmodule Omni.Agent.MixProject do
 
   defp pkg do
     [
-      description: "Stateful LLM agents for Elixir. Multi-turn conversations with lifecycle callbacks, tool approval, and steering. Built on Omni.",
+      description:
+        "Stateful LLM agents for Elixir. Multi-turn conversations with lifecycle callbacks, tool approval, and steering. Built on Omni.",
       licenses: ["Apache-2.0"],
       maintainers: ["Aaron Russell"],
       files: ~w(lib .formatter.exs mix.exs CHANGELOG.md LICENSE README.md),

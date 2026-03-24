@@ -6,9 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **`:step` event** — `{:agent, pid, :step, %Response{}}` emitted after each LLM request-response completes, giving consumers per-step visibility into multi-step turns.
+
+### Changed
+
+- **`:done`/`:continue` events replaced by `:turn`** — `{:agent, pid, :done, response}` is now `{:agent, pid, :turn, {:stop, response}}` and `{:agent, pid, :continue, response}` is now `{:agent, pid, :turn, {:continue, response}}`. This mirrors the `handle_turn/2` callback return values and pairs naturally with the new `:step` event.
+
 ### Fixed
 
-- **Structured output not propagated to response** — when using the `output:` option with a schema, the parsed `output` from the LLM response was not being set on the `Response` delivered with `:done` and `:continue` events. The output is now correctly carried through from the underlying step response.
+- **Structured output not propagated to response** — when using the `output:` option with a schema, the parsed `output` from the LLM response was not being set on the `Response` delivered with `:turn` events. The output is now correctly carried through from the underlying step response.
 
 ## [0.1.0] - 2026-03-24
 
@@ -32,4 +40,4 @@ The agent internals were simplified — the loop hierarchy was flattened from th
 ---
 
 [Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.1.0...HEAD
-[1.2.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.1.0
+[0.1.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.1.0

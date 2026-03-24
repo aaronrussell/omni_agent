@@ -14,13 +14,13 @@ defmodule Omni.Agent.OutputTest do
   end
 
   describe "structured output" do
-    test "done response carries parsed output" do
+    test "turn response carries parsed output" do
       {:ok, agent} = start_agent(fixture: @json_fixture)
 
       :ok = Agent.prompt(agent, "Create a character", output: character_schema())
       events = collect_events(agent)
 
-      assert {:done, %Response{} = resp} = List.last(events)
+      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
       assert resp.output == %{name: "Kai Nakamura", class: "warrior"}
     end
 
@@ -30,13 +30,13 @@ defmodule Omni.Agent.OutputTest do
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
-      assert {:done, %Response{} = resp} = List.last(events)
+      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
       assert resp.output == nil
     end
   end
 
   describe "structured output with continuation" do
-    test "done response carries the last step's output" do
+    test "turn response carries the last step's output" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@json_fixture, @json_fixture, @json_fixture]
@@ -45,11 +45,11 @@ defmodule Omni.Agent.OutputTest do
       :ok = Agent.prompt(agent, "Create a character", output: character_schema())
       events = collect_events(agent)
 
-      assert {:done, %Response{} = resp} = List.last(events)
+      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
       assert resp.output == %{name: "Kai Nakamura", class: "warrior"}
     end
 
-    test "continue events carry intermediate outputs" do
+    test "turn {:continue} events carry intermediate outputs" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@json_fixture, @json_fixture, @json_fixture]
@@ -58,7 +58,7 @@ defmodule Omni.Agent.OutputTest do
       :ok = Agent.prompt(agent, "Create a character", output: character_schema())
       events = collect_events(agent)
 
-      continue_events = for {:continue, resp} <- events, do: resp
+      continue_events = for {:turn, {:continue, resp}} <- events, do: resp
       assert length(continue_events) == 2
 
       for resp <- continue_events do

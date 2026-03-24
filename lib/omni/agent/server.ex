@@ -5,13 +5,13 @@ defmodule Omni.Agent.Server do
   #
   #   prompt/3 ──► TURN START
   #   │
-  #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete
+  #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete ──► :step event
   #   │   └─ tool_use? ──► handle_tool_decision_phase ──► spawn_executor
-  #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete
+  #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete ──► :step event
   #   │   └─ tool_use? ──► ...repeat...
   #   └─ evaluate_head ──► assistant (no tools) ──► finalize_turn ──► handle_turn
-  #       ├─ {:continue, prompt} ──► :continue event ──► new step(s)
-  #       └─ {:stop, state} ──► complete_turn ──► :done event ──► TURN END
+  #       ├─ {:continue, prompt} ──► :turn {:continue} event ──► new step(s)
+  #       └─ {:stop, state} ──► complete_turn ──► :turn {:stop} event ──► TURN END
 
   use GenServer
 
@@ -383,6 +383,7 @@ defmodule Omni.Agent.Server do
         pending_usage: pending_usage
     }
 
+    notify(server, :step, response)
     evaluate_head(server)
   end
 
@@ -535,7 +536,7 @@ defmodule Omni.Agent.Server do
 
   defp continue_turn(prompt, server) do
     response = build_turn_response(server)
-    notify(server, :continue, response)
+    notify(server, :turn, {:continue, response})
 
     user_message = Message.new(role: :user, content: prompt)
     server = %{server | pending_messages: server.pending_messages ++ [user_message]}
@@ -550,7 +551,7 @@ defmodule Omni.Agent.Server do
 
     response = build_turn_response(server)
     server = reset_turn(server)
-    notify(server, :done, response)
+    notify(server, :turn, {:stop, response})
     server
   end
 

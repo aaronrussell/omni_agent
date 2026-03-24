@@ -153,8 +153,11 @@ defmodule Omni.Agent.AgentCase do
 
       defp collect_events_loop(agent_pid, acc, timeout) do
         receive do
-          {:agent, ^agent_pid, :done, response} ->
-            Enum.reverse([{:done, response} | acc])
+          {:agent, ^agent_pid, :turn, {:continue, _} = data} ->
+            collect_events_loop(agent_pid, [{:turn, data} | acc], timeout)
+
+          {:agent, ^agent_pid, :turn, {:stop, _} = data} ->
+            Enum.reverse([{:turn, data} | acc])
 
           {:agent, ^agent_pid, :error, response} ->
             Enum.reverse([{:error, response} | acc])

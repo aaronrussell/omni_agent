@@ -16,8 +16,8 @@ defmodule Omni.Agent.ToolTest do
       tool_results = for {:tool_result, _data} <- events, do: :ok
       assert length(tool_results) > 0
 
-      # Should end with :done and a text response
-      assert {:done, %Response{stop_reason: :stop} = resp} = List.last(events)
+      # Should end with :turn {:stop} and a text response
+      assert {:turn, {:stop, %Response{stop_reason: :stop} = resp}} = List.last(events)
       assert [%Text{}] = resp.message.content
 
       # Context should have all messages: user, assistant(tool_use), user(tool_results), assistant(text)
@@ -41,8 +41,8 @@ defmodule Omni.Agent.ToolTest do
       tool_results = for {:tool_result, _data} <- events, do: :ok
       assert tool_results == []
 
-      # Should end with :done and tool_use stop reason
-      assert {:done, %Response{stop_reason: :tool_use}} = List.last(events)
+      # Should end with :turn {:stop} and tool_use stop reason
+      assert {:turn, {:stop, %Response{stop_reason: :tool_use}}} = List.last(events)
       assert Agent.get_state(agent, :private).last_stop_reason == :tool_use
     end
   end
@@ -64,7 +64,7 @@ defmodule Omni.Agent.ToolTest do
       assert Enum.any?(tool_result_events, & &1.is_error)
 
       # Loop continues to final text response
-      assert {:done, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
   end
 
@@ -79,7 +79,7 @@ defmodule Omni.Agent.ToolTest do
       :ok = Agent.prompt(agent, "What's the weather?")
       events = collect_events(agent)
 
-      assert {:done, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
 
       # The tool result user message should contain modified content
       messages = Agent.get_state(agent, :context).messages
@@ -176,12 +176,12 @@ defmodule Omni.Agent.ToolTest do
       assert Enum.any?(tool_result_events, & &1.is_error)
 
       # Loop continues to final response
-      assert {:done, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
   end
 
   describe "usage in response" do
-    test "done response carries usage from tool loop steps" do
+    test "turn response carries usage from tool loop steps" do
       {:ok, agent} =
         start_agent(
           tools: [tool_with_handler()],
@@ -191,7 +191,7 @@ defmodule Omni.Agent.ToolTest do
       :ok = Agent.prompt(agent, "What's the weather?")
       events = collect_events(agent)
 
-      assert {:done, %Response{} = resp} = List.last(events)
+      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
       assert resp.usage.total_tokens > 0
       assert resp.usage.input_tokens > 0
       assert resp.usage.output_tokens > 0
@@ -225,14 +225,14 @@ defmodule Omni.Agent.ToolTest do
       :ok = Agent.prompt(agent, "What's the weather?")
       events = collect_events(agent)
 
-      # Should have tool_result (from provided result) and then :done
+      # Should have tool_result (from provided result) and then :turn {:stop}
       tool_results = for {:tool_result, data} <- events, do: data
       assert length(tool_results) == 1
       [tr] = tool_results
       assert tr.name == "get_weather"
       refute tr.is_error
 
-      assert {:done, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
   end
 end

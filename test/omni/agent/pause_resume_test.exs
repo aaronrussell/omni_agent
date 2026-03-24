@@ -39,10 +39,10 @@ defmodule Omni.Agent.PauseResumeTest do
       :ok = Agent.resume(agent, :execute)
       events = collect_events(agent)
 
-      # Should have tool_result and then :done
+      # Should have tool_result and then :turn {:stop}
       tool_results = for {:tool_result, _data} <- events, do: :ok
       assert length(tool_results) > 0
-      assert {:done, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
 
     test "resume({:reject, reason}) produces error ToolResult and continues" do
@@ -60,11 +60,11 @@ defmodule Omni.Agent.PauseResumeTest do
       :ok = Agent.resume(agent, {:reject, "not safe"})
       events = collect_events(agent)
 
-      # Should have tool_result with is_error and then :done
+      # Should have tool_result with is_error and then :turn {:stop}
       tool_result_events = for {:tool_result, data} <- events, do: data
       assert length(tool_result_events) > 0
       assert Enum.any?(tool_result_events, & &1.is_error)
-      assert {:done, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
 
     test "resume when not paused returns {:error, :not_paused}" do
@@ -109,7 +109,7 @@ defmodule Omni.Agent.PauseResumeTest do
       :ok = Agent.resume(agent, :execute)
       events = collect_events(agent)
 
-      assert {:done, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
   end
 
@@ -138,7 +138,7 @@ defmodule Omni.Agent.PauseResumeTest do
 
       tool_results = for {:tool_result, data} <- events, do: data
       assert length(tool_results) > 0
-      assert {:done, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
   end
 end

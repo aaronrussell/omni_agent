@@ -67,10 +67,10 @@ defmodule Omni.Agent.SteeringTest do
 
       events = collect_events(agent)
 
-      # Should have a :continue event (first turn) followed by :done (second turn from steering)
-      turn_events = for {:continue, _data} <- events, do: :ok
-      assert length(turn_events) == 1
-      assert {:done, %Response{}} = List.last(events)
+      # Should have a :turn {:continue} event (first turn) followed by :turn {:stop} (second turn from steering)
+      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
+      assert length(continue_events) == 1
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
 
     test "last-one-wins: second staged prompt replaces first" do
@@ -91,9 +91,9 @@ defmodule Omni.Agent.SteeringTest do
 
       # The second prompt should win — agent will continue after first turn
       events = collect_events(agent)
-      turn_events = for {:continue, _data} <- events, do: :ok
-      assert length(turn_events) == 1
-      assert {:done, %Response{}} = List.last(events)
+      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
+      assert length(continue_events) == 1
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
 
       # Context should have messages from two turns
       messages = Agent.get_state(agent, :context).messages
@@ -123,10 +123,10 @@ defmodule Omni.Agent.SteeringTest do
       :ok = Agent.resume(agent, :execute)
       events = collect_events(agent)
 
-      # Should have :continue (tool loop completed) then :done (staged prompt turn)
-      turn_events = for {:continue, _data} <- events, do: :ok
-      assert length(turn_events) == 1
-      assert {:done, %Response{}} = List.last(events)
+      # Should have :turn {:continue} (tool loop completed) then :turn {:stop} (staged prompt turn)
+      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
+      assert length(continue_events) == 1
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
   end
 
@@ -217,9 +217,9 @@ defmodule Omni.Agent.SteeringTest do
       # The staged prompt should have overridden the continuation
       # ContinueAgent's handle_turn still fires (turn_count increments)
       # but the staged prompt replaces the continuation content
-      continue_events = for {:continue, _data} <- events, do: :ok
+      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
       assert length(continue_events) >= 1
-      assert {:done, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
 
       # Verify the staged prompt made it into context
       messages = Agent.get_state(agent, :context).messages
@@ -248,8 +248,8 @@ defmodule Omni.Agent.SteeringTest do
 
       events = collect_events(agent)
 
-      # Should complete with :done (max_steps forces stop, staged prompt ignored)
-      assert {:done, %Response{}} = List.last(events)
+      # Should complete with :turn {:stop} (max_steps forces stop, staged prompt ignored)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
       # Only 1 turn worth of messages (user + assistant = 2)
       assert length(Agent.get_state(agent, :context).messages) == 2
     end
