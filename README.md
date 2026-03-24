@@ -205,4 +205,4 @@ Full API documentation is available on [HexDocs](https://hexdocs.pm/omni_agent).
 
 This package is open source and released under the [Apache-2 License](https://github.com/aaronrussell/omni_agent/blob/main/LICENSE).
 
-© Copyright 2024-2026 [Push Code Ltd](https://www.pushcode.com/).
+© Copyright 2026 [Push Code Ltd](https://www.pushcode.com/).
