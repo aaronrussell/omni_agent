@@ -25,7 +25,7 @@ weather_tool =
 defmodule Loop do
   def listen(pid) do
     receive do
-  	  {:agent, ^pid, :done, response} ->
+  	  {:agent, ^pid, :stop, response} ->
   			IO.puts "==== DONE ===="
   			dbg response
 

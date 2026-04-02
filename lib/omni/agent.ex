@@ -22,7 +22,7 @@ defmodule Omni.Agent do
       # Events arrive as process messages
       receive do
         {:agent, ^agent, :text_delta, %{delta: text}} -> IO.write(text)
-        {:agent, ^agent, :turn, {:stop, response}} -> IO.puts("\\nDone!")
+        {:agent, ^agent, :stop, response} -> IO.puts("\\nDone!")
       end
 
   The first `prompt/3` call automatically sets the caller as the event
@@ -113,27 +113,27 @@ defmodule Omni.Agent do
 
   **Agent-level events** — emitted by the agent at lifecycle boundaries:
 
-      {:agent, pid, :tool_result, %ToolResult{}}        # tool executed, result available
-      {:agent, pid, :step,        %Response{}}           # step complete, per-step response
-      {:agent, pid, :turn,        {:continue, %Response{}}} # handle_turn continued, agent looping
-      {:agent, pid, :turn,        {:stop, %Response{}}}     # turn complete, messages committed
-      {:agent, pid, :pause,       {reason, %ToolUse{}}}  # waiting for tool decision
-      {:agent, pid, :retry,       reason}                # non-terminal error, agent retrying
-      {:agent, pid, :error,       reason}                # terminal error, agent goes idle
-      {:agent, pid, :cancelled,   %Response{}}           # cancel was invoked
+      {:agent, pid, :pause,       {reason, %ToolUse{}}}   # waiting for tool decision
+      {:agent, pid, :tool_result, %ToolResult{}}          # tool executed, result available
+      {:agent, pid, :step,        %Response{}}            # step complete, per-step response
+      {:agent, pid, :continue,    %Response{}}            # handle_turn continued, agent looping
+      {:agent, pid, :stop,        %Response{}}            # turn complete, agent stopped
+      {:agent, pid, :retry,       reason}                 # non-terminal error, agent retrying
+      {:agent, pid, :error,       reason}                 # terminal error, agent goes idle
+      {:agent, pid, :cancelled,   %Response{}}            # cancel was invoked
 
   `:step` fires after each LLM request-response completes, carrying the
-  per-step `%Response{}` from `stream_text`. `:turn` events fire at turn
-  boundaries — `{:continue, response}` when `handle_turn/2` returns
-  `{:continue, ...}` (the agent is looping), `{:stop, response}` when
-  `handle_turn/2` returns `{:stop, ...}` (the turn's messages are committed
-  to `context.messages`). Both `:turn` and `:cancelled` carry a `%Response{}`
-  with `messages` — all messages accumulated during the turn. `:cancelled`
-  fires after `cancel/1` with `stop_reason: :cancelled` — pending messages
-  are discarded (context unchanged). `:error` fires after `handle_error/2`
-  returns `{:stop, state}` — pending messages are discarded and the agent
-  goes idle. A simple chatbot (one step per prompt) sees only
-  `{:turn, {:stop, response}}`.
+  per-step `%Response{}` from `stream_text`. `:stop` and `:continue` fire at
+  turn boundaries — `:continue` when `handle_turn/2` returns
+  `{:continue, ...}` (the agent is looping), `:stop` when `handle_turn/2`
+  returns `{:stop, ...}` (the turn's messages are committed to
+  `context.messages`). `:stop`, `:continue`, and `:cancelled` all carry a
+  `%Response{}` with `messages` — all messages accumulated during the turn.
+  `:cancelled` fires after `cancel/1` with `stop_reason: :cancelled` —
+  pending messages are discarded (context unchanged). `:error` fires after
+  `handle_error/2` returns `{:stop, state}` — pending messages are discarded
+  and the agent goes idle. A simple chatbot (one step per prompt) sees only
+  `:stop`.
 
   ## Tools and the agent loop
 
@@ -250,20 +250,20 @@ defmodule Omni.Agent do
 
     * **Step** — a single LLM request-response cycle. If the model calls tools,
       the agent handles them and makes another request. Each request is one step.
-    * **Turn** — starts with `prompt/3`, ends with `{:turn, {:stop, response}}`.
+    * **Turn** — starts with `prompt/3`, ends with `{:stop, response}`.
       A turn may contain multiple steps. `handle_turn/2` fires when the model
       responds without executable tools. If it returns `{:continue, ...}`, the
       agent keeps working within the same turn.
 
   Each step emits a `:step` event with the per-step response. Turn boundaries
-  emit `:turn` events. A turn with continuation looks like this:
+  emit `:stop` or `:continue` events. A turn with continuation looks like this:
 
       turn
         step 1 → :step event → tool_use → step 2 → :step event → tool_use
           → step 3 → :step event → :stop → handle_turn
-          → {:continue, "keep going"} → :turn {:continue} event
+          → {:continue, "keep going"} → :continue event
         step 4 → :step event → :stop → handle_turn
-          → {:stop, state} → :turn {:stop} event
+          → {:stop, state} → :stop event
 
   `:max_steps` (default `:infinity`) caps the total number of LLM requests
   across the turn. Set it in `:opts` at startup or override per-prompt via
@@ -286,7 +286,7 @@ defmodule Omni.Agent do
         {:noreply, stream_insert(socket, :chunks, %{text: text})}
       end
 
-      def handle_info({:agent, _pid, :turn, {:stop, _response}}, socket) do
+      def handle_info({:agent, _pid, :stop, _response}, socket) do
         {:noreply, assign(socket, :status, :complete)}
       end
 
@@ -325,7 +325,7 @@ defmodule Omni.Agent do
     * `:length` — output was truncated (hit max output tokens)
     * `:refusal` — the model declined due to content or safety policy
 
-  Return `{:stop, state}` to end the turn (listener receives `{:turn, {:stop, response}}`),
+  Return `{:stop, state}` to end the turn (listener receives `{:stop, response}`),
   or `{:continue, content, state}` to append a user message and continue.
   The `content` argument accepts a string or a list of content blocks.
 

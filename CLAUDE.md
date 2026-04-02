@@ -12,7 +12,7 @@ The package is separated from `omni` because the stateless LLM API layer (omni) 
 
 An agent is a process that holds a model, a context (system prompt, messages, tools), and user-defined state. The outside world sends prompts in; the agent works on them (potentially across multiple LLM steps) and sends events back. Users control behaviour through lifecycle callbacks.
 
-The agent owns the **turn** (a complete prompt-to-stop cycle), while the **application** owns the session (persistence, branching, navigation, cumulative usage tracking). During a turn, messages accumulate internally as `pending_messages`. On success (`{:turn, {:stop, response}}`), they're committed to `context.messages`. On cancel or error, they're discarded — the context always stays in a valid state.
+The agent owns the **turn** (a complete prompt-to-stop cycle), while the **application** owns the session (persistence, branching, navigation, cumulative usage tracking). During a turn, messages accumulate internally as `pending_messages`. On success (`{:stop, response}`), they're committed to `context.messages`. On cancel or error, they're discarded — the context always stays in a valid state.
 
 ### What lives here vs in `omni`
 
@@ -66,7 +66,7 @@ Agent state is split into two structs:
 
 ### Context and pending messages
 
-The agent holds a `%Context{}` (from `omni`) containing the system prompt, committed messages, and tools. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `pending_messages` (internal server state). LLM requests see `context.messages ++ pending_messages`. On `{:turn, {:stop, ...}}`, pending messages are committed to `context.messages`. On cancel or error, they're discarded.
+The agent holds a `%Context{}` (from `omni`) containing the system prompt, committed messages, and tools. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `pending_messages` (internal server state). LLM requests see `context.messages ++ pending_messages`. On `{:stop, ...}`, pending messages are committed to `context.messages`. On cancel or error, they're discarded.
 
 This design means the context is always in a valid state — no trailing user messages after cancel/error. The application can use `set_state/2,3` to update the context (swap messages for navigation, hydrate a session, etc.) when the agent is idle.
 
@@ -75,7 +75,7 @@ This design means the context is always in a valid state — no trailing user me
 The agent loop operates at two levels:
 
 - **Step** — a single LLM request-response. If the model calls tools, the agent handles them and makes another request.
-- **Turn** — starts with `prompt/3`, ends with `{:turn, {:stop, response}}`. `handle_turn` fires when the model responds without executable tools. If it returns `{:continue, ...}`, the agent keeps working within the same turn.
+- **Turn** — starts with `prompt/3`, ends with `{:stop, response}`. `handle_turn` fires when the model responds without executable tools. If it returns `{:continue, ...}`, the agent keeps working within the same turn.
 
 A single `evaluate_head/1` function drives the state machine: last pending message is a user message → spawn step, assistant with tool uses → tool decision phase, assistant without → `handle_turn`.
 
@@ -107,8 +107,8 @@ lib/omni/
 - Agent statuses: `:idle`, `:running`, `:paused`. Status determines which API calls are valid.
 - All callbacks are optional with `defoverridable` defaults. Users implement only what they need.
 - `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:context`, `:opts`, `:meta`.
-- `:step` events carry the per-step `%Response{}` from each LLM request. `:turn` events (`{:stop, response}` or `{:continue, response}`) and `:cancelled` carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
-- The agent has no `session_id` or built-in persistence — session identity and storage are application concerns. The `{:turn, {:stop, response}}` event carries enough context (`messages`, `usage`) for external listeners to persist.
+- `:step` events carry the per-step `%Response{}` from each LLM request. `:stop`, `:continue`, and `:cancelled` events carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
+- The agent has no `session_id` or built-in persistence — session identity and storage are application concerns. The `{:stop, response}` event carries enough context (`messages`, `usage`) for external listeners to persist.
 - `prompt/3` behaviour depends on status: idle → start turn, running/paused → stage for next turn boundary (steering).
 - On error (after `handle_error/2` returns `{:stop, state}`), pending messages are discarded and the agent goes to `:idle`. The app can prompt again immediately.
 

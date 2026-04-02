@@ -238,9 +238,9 @@ defstruct [
 ]
 ```
 
-During a turn, messages accumulate in `pending_messages`. LLM requests see `context.messages ++ pending_messages`. On turn completion (`{:turn, {:stop, response}}`), pending messages are committed to `context.messages`. On cancel or error, pending messages are discarded — the context stays clean.
+During a turn, messages accumulate in `pending_messages`. LLM requests see `context.messages ++ pending_messages`. On turn completion (`{:stop, response}`), pending messages are committed to `context.messages`. On cancel or error, pending messages are discarded — the context stays clean.
 
-`pending_usage` accumulates usage across steps within a turn and is included in the `{:turn, {:stop, response}}` event. The agent does not track cumulative session usage — that's an application concern.
+`pending_usage` accumulates usage across steps within a turn and is included in the `{:stop, response}` event. The agent does not track cumulative session usage — that's an application concern.
 
 ### What the state does NOT store
 
@@ -394,8 +394,8 @@ All events from the agent follow the format `{:agent, agent_pid, event_type, eve
 # Agent-level events
 {:agent, pid, :tool_result, %ToolResult{}}        # after tool execution
 {:agent, pid, :step,        %Response{}}           # step complete, per-step response
-{:agent, pid, :turn,        {:continue, %Response{}}} # continuation point, agent continuing
-{:agent, pid, :turn,        {:stop, %Response{}}}     # turn complete
+{:agent, pid, :continue,    %Response{}}           # continuation point, agent continuing
+{:agent, pid, :stop,        %Response{}}           # turn complete
 {:agent, pid, :pause,       {reason, %ToolUse{}}}  # waiting for tool approval
 {:agent, pid, :cancelled,   %Response{}}           # cancel was invoked, pending discarded
 {:agent, pid, :retry,       reason}                # non-terminal error, agent retrying step
@@ -404,9 +404,9 @@ All events from the agent follow the format `{:agent, agent_pid, event_type, eve
 
 **SR pass-through events** are forwarded from the Step Task as the LLM streams its response.
 
-**Agent-level events** are emitted by the GenServer itself. `:step` fires after each LLM request-response, carrying the per-step `%Response{}`. `:turn` events fire at turn boundaries — `{:continue, response}` when continuing, `{:stop, response}` when the turn ends. Both `:turn` and `:cancelled` carry a `%Response{}` with `messages` — all messages accumulated during the turn. `:turn {:stop}` messages are committed to `context.messages`; `:cancelled` messages are discarded. `:error` carries the bare error reason term — the agent discards pending state and goes to `:idle`. `:retry` is emitted when `handle_error` returns `{:retry, state}` — it carries the error reason and signals that a new step will follow. `:tool_result` carries `%ToolResult{}`, `:pause` carries `{reason, %ToolUse{}}`.
+**Agent-level events** are emitted by the GenServer itself. `:step` fires after each LLM request-response, carrying the per-step `%Response{}`. `:stop` and `:continue` fire at turn boundaries — `:continue` when continuing, `:stop` when the turn ends. `:stop`, `:continue`, and `:cancelled` all carry a `%Response{}` with `messages` — all messages accumulated during the turn. `:stop` messages are committed to `context.messages`; `:cancelled` messages are discarded. `:error` carries the bare error reason term — the agent discards pending state and goes to `:idle`. `:retry` is emitted when `handle_error` returns `{:retry, state}` — it carries the error reason and signals that a new step will follow. `:tool_result` carries `%ToolResult{}`, `:pause` carries `{reason, %ToolUse{}}`.
 
-**Continuation points:** `{:turn, {:continue, response}}` fires at each continuation point (where `handle_turn` returned `{:continue, ...}`). `{:turn, {:stop, response}}` fires when the turn ends. A simple chatbot (single step, no continuation) only sees `{:turn, {:stop, response}}`.
+**Continuation points:** `:continue` fires at each continuation point (where `handle_turn` returned `{:continue, ...}`). `:stop` fires when the turn ends. A simple chatbot (single step, no continuation) only sees `:stop`.
 
 ```
 # Simple chatbot (single step, no tools)
@@ -433,7 +433,7 @@ receive do
   {:agent, ^agent, :text_delta, %{delta: text}} -> IO.write(text)
   {:agent, ^agent, :pause, {_reason, tool_use}} ->
     Agent.resume(agent, :execute)
-  {:agent, ^agent, :turn, {:stop, response}} -> handle_result(response)
+  {:agent, ^agent, :stop, response} -> handle_result(response)
 end
 ```
 
@@ -449,11 +449,11 @@ def handle_info({:agent, _pid, :text_delta, %{delta: text}}, socket) do
   {:noreply, stream_insert(socket, :messages, %{type: :text, text: text})}
 end
 
-def handle_info({:agent, _pid, :turn, {:continue, _response}}, socket) do
+def handle_info({:agent, _pid, :continue, _response}, socket) do
   {:noreply, assign(socket, :status, "Agent continuing...")}
 end
 
-def handle_info({:agent, _pid, :turn, {:stop, response}}, socket) do
+def handle_info({:agent, _pid, :stop, response}, socket) do
   {:noreply, assign(socket, status: "Complete", response: response)}
 end
 
@@ -528,7 +528,7 @@ Called when the model responds without executable tool uses, or when tool uses h
 
 The stop reason is available as `response.stop_reason` (`:stop`, `:tool_use`, `:length`, `:refusal`).
 
-Returns: `{:stop, state}` (end turn, emit `{:turn, {:stop, response}}`) or `{:continue, prompt, state}` (append user message, continue).
+Returns: `{:stop, state}` (end turn, emit `{:stop, response}`) or `{:continue, prompt, state}` (append user message, continue).
 
 Default: `{:stop, state}` (always stop).
 
@@ -578,14 +578,14 @@ When the model calls `task_complete`, the tool executes like any other tool (flo
 
 The agent's loop has two conceptual levels:
 
-- **Turn** -- the top-level cycle, starting with `prompt/3` and ending with `{:turn, {:stop, response}}`. A turn may contain multiple steps. When `handle_turn` returns `{:continue, ...}`, the agent continues within the same turn.
+- **Turn** -- the top-level cycle, starting with `prompt/3` and ending with `{:stop, response}`. A turn may contain multiple steps. When `handle_turn` returns `{:continue, ...}`, the agent continues within the same turn.
 - **Step** -- a single LLM request-response cycle. If the model responds with tool use blocks, the agent handles them and makes a new request with the tool results. `handle_turn` fires when a step completes without tool uses.
 
 ### max_steps
 
 A single `max_steps` option (default `:infinity`) caps the total number of LLM requests across the entire turn. The step counter resets when a new turn begins.
 
-When hit: `handle_turn` still fires, but if it returns `{:continue, ...}`, the agent overrides the decision and stops. The listener receives `{:turn, {:stop, response}}` as normal.
+When hit: `handle_turn` still fires, but if it returns `{:continue, ...}`, the agent overrides the decision and stops. The listener receives `{:stop, response}` as normal.
 
 ---
 
@@ -633,7 +633,7 @@ Messages accumulate in `pending_messages` during a turn, not directly in the con
 
 `build_context/1` creates the LLM request context as `context.messages ++ pending_messages`.
 
-On `{:turn, {:stop, ...}}`, pending messages are committed: `context.messages = context.messages ++ pending_messages`. On cancel or error, they're discarded — `context.messages` stays unchanged.
+On `{:stop, ...}`, pending messages are committed: `context.messages = context.messages ++ pending_messages`. On cancel or error, they're discarded — `context.messages` stays unchanged.
 
 ### evaluate_head state machine
 

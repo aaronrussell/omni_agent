@@ -11,13 +11,13 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       events = collect_events(agent)
 
-      # Should have exactly 2 :turn {:continue} events and 1 :turn {:stop} event
-      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
-      stop_events = for {:turn, {:stop, _data}} <- events, do: :ok
+      # Should have exactly 2 :continue events and 1 :stop event
+      continue_events = for {:continue, _data} <- events, do: :ok
+      stop_events = for {:stop, _data} <- events, do: :ok
       assert length(continue_events) == 2
       assert length(stop_events) == 1
 
-      assert {:turn, {:stop, %Response{}}} = List.last(events)
+      assert {:stop, %Response{}} = List.last(events)
       assert Agent.get_state(agent, :private).turn_count == 3
     end
 
@@ -48,10 +48,10 @@ defmodule Omni.Agent.ContinuationTest do
       events = collect_events(agent)
 
       # Should stop after 2 steps
-      assert {:turn, {:stop, %Response{}}} = List.last(events)
+      assert {:stop, %Response{}} = List.last(events)
 
-      # Only 1 :turn {:continue} event (step 1 completes, continues, step 2 completes, forced stop)
-      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
+      # Only 1 :continue event (step 1 completes, continues, step 2 completes, forced stop)
+      continue_events = for {:continue, _data} <- events, do: :ok
       assert length(continue_events) == 1
     end
 
@@ -65,8 +65,8 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Use tool twice", max_steps: 2)
       events = collect_events(agent)
 
-      # Should stop with :turn {:stop} (max_steps hit after tool results processed)
-      assert {:turn, {:stop, %Response{stop_reason: :tool_use}}} = List.last(events)
+      # Should stop with :stop (max_steps hit after tool results processed)
+      assert {:stop, %Response{stop_reason: :tool_use}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
 
       # Context should be committed (includes tool result messages)
@@ -85,14 +85,14 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       events = collect_events(agent)
 
-      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
+      assert {:stop, %Response{} = resp} = List.last(events)
       # Should be 3x a single request's usage
       assert resp.usage.total_tokens > 0
     end
   end
 
   describe "continue event content" do
-    test "turn {:continue} event carries intermediate response with messages" do
+    test "{:continue} event carries intermediate response with messages" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@text_fixture, @text_fixture, @text_fixture],
@@ -102,7 +102,7 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       events = collect_events(agent)
 
-      continue_events = for {:turn, {:continue, data}} <- events, do: data
+      continue_events = for {:continue, data} <- events, do: data
       assert length(continue_events) == 2
 
       # First continue should have 2 messages (user + assistant)
@@ -129,7 +129,7 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Second")
       events = collect_events(agent)
 
-      assert {:turn, {:stop, %Response{}}} = List.last(events)
+      assert {:stop, %Response{}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
     end
   end

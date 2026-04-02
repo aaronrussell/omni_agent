@@ -27,7 +27,7 @@ defmodule Loop do
         dbg response.output
         listen(pid)
 
-  	  {:agent, ^pid, :done, response} ->
+  	  {:agent, ^pid, :stop, response} ->
   			dbg response.output
 
   		{:agent, ^pid, :error, error} ->

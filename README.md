@@ -19,7 +19,7 @@ Add Omni Agent to your dependencies:
 ```elixir
 def deps do
   [
-    {:omni_agent, "~> 0.1"}
+    {:omni_agent, "~> 0.2"}
   ]
 end
 ```
@@ -39,7 +39,7 @@ Start an agent and send a prompt — events arrive as process messages:
 
 receive do
   {:agent, ^agent, :text_delta, %{delta: text}} -> IO.write(text)
-  {:agent, ^agent, :done, response} -> IO.puts("\nDone!")
+  {:agent, ^agent, :stop, response} -> IO.puts("\nDone!")
 end
 ```
 
@@ -192,7 +192,7 @@ def handle_info({:agent, _pid, :text_delta, %{delta: text}}, socket) do
   {:noreply, stream_insert(socket, :chunks, %{text: text})}
 end
 
-def handle_info({:agent, _pid, :done, _response}, socket) do
+def handle_info({:agent, _pid, :stop, _response}, socket) do
   {:noreply, assign(socket, :status, :complete)}
 end
 ```
