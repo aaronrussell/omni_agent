@@ -79,25 +79,59 @@ defmodule Omni.Agent do
 
   Options for `start_link/1` and `start_link/2`:
 
-    * `:model` (required) — `{provider_id, model_id}` tuple or `%Model{}`
+    * `:model` — `{provider_id, model_id}` tuple or `%Model{}`. Required
+      for ephemeral and new-mode agents; optional when `:load`-ing (the
+      persisted ref is used, with `:model` acting as a fallback for
+      unresolvable refs)
     * `:system` — system prompt string
     * `:tools` — list of `%Tool{}` structs available to the model
-    * `:tree` — an `%Omni.Agent.Tree{}` for session hydration. Typically only
-      used when forking or loading a prior conversation; omit to start fresh
-    * `:meta` — initial metadata map (user data for application use)
-    * `:id` — agent identifier (reserved; currently unused — persistence
-      arrives in a later phase and will populate this automatically)
+    * `:tree` — an `%Omni.Agent.Tree{}` for session hydration. Pass at
+      startup to fork or seed; not valid alongside `:load`
+    * `:meta` — initial metadata map (user data for application use).
+      Not valid alongside `:load` — mutate via `set_state/2` after load
+    * `:id` — identifier for an ephemeral agent (e.g. for supervised-
+      ephemeral registration via `Omni.Agent.Manager`). Not valid with
+      `:store` — persistent agents specify identity via `:new` / `:load`
     * `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)
     * `:opts` — inference options passed to `stream_text` each step
       (`:temperature`, `:max_tokens`, `:max_steps`, etc.)
     * `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
       standard GenServer options
 
+  ### Persistence opts
+
+    * `:store` — a module implementing `Omni.Agent.Store`. Attaches the
+      adapter for write-through persistence. Adapters can accept
+      additional opts inline (e.g. `:base_path` for
+      `Omni.Agent.Store.FileSystem`)
+    * `:new` — id string for a fresh persisted agent. Errors with
+      `{:error, :already_exists}` if the id is already in the store.
+      Omit to auto-generate an id via `generate_id/0`
+    * `:load` — id string to hydrate from the store. Errors with
+      `{:error, :not_found}` if the id isn't present
+
+  On load, state is sourced by field category: `:tree` and `:meta`
+  always come from persisted data (not settable via opts); `:model`,
+  `:system`, and `:opts` use the caller's value when provided, else
+  persisted. Overrides are re-persisted immediately on init.
+
+  Model resolution on load is lenient: the persisted ref is tried
+  first; on failure (e.g. the app removed a model between sessions),
+  the caller's `:model` opt is the fallback. If both fail, init
+  returns `{:error, :model_not_found}`.
+
   Rejected start options (from earlier versions):
 
     * `:listener` — removed; use `subscribe/1` instead
     * `:context` — removed; pass `:system`, `:tools`, `:tree` separately
     * `:messages` — removed; pass a `%Omni.Agent.Tree{}` via `:tree`
+
+  Invalid combinations surface at init:
+
+    * `:new` / `:load` without `:store` → `{:error, :store_required}`
+    * Both `:new` and `:load` → `{:error, :conflicting_opts}`
+    * `:load` with `:tree` / `:meta` → `{:error, {:invalid_load_opts, fields}}`
+    * `:id` with `:store` / `:new` / `:load` → `{:error, {:invalid_opts, [:id]}}`
 
   ## Subscribers
 

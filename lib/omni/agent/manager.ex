@@ -44,15 +44,22 @@ defmodule Omni.Agent.Manager do
   ## Id resolution
 
   Every supervised agent has an id (registration requires one).
-  `start_agent/1,2` uses `:id` from opts when present, otherwise
-  generates one via `Omni.Agent.generate_id/0`. Id generation is
-  framework-level and independent of `:store`, so supervised-ephemeral
-  agents (no persistence, but registered and findable by id) are a
-  first-class mode alongside supervised-persistent ones.
+  `start_agent/1,2` extracts or generates it from the opts that name
+  an id — `:load`, `:new`, or `:id` — and registers the pid under that
+  id in the Registry:
 
-  In Phase 3 sub-deliverable 3, the public opts grow to `:new` / `:load`
-  for store-driven hydration; those combinations bypass `:id`
-  resolution because the id is part of the opt itself.
+    * `:load "x"` present — load an existing persisted agent; id = `"x"`.
+    * `:new "x"` present — create a new persisted agent with explicit id.
+    * `:id "x"` present — supervised-ephemeral with explicit id.
+    * `:store` present, no `:load` / `:new` / `:id` — persistent with
+      auto-generated id; Manager generates it and injects as `:new id`.
+    * None of the above — ephemeral with auto-generated id; Manager
+      generates it and injects as `:id id`.
+
+  Id generation is framework-level (`Omni.Agent.generate_id/0`) and
+  independent of `:store`, so supervised-ephemeral agents (registered
+  and findable by id without persistence) are a first-class mode
+  alongside supervised-persistent ones.
   """
 
   use Supervisor
@@ -103,12 +110,8 @@ defmodule Omni.Agent.Manager do
   """
   @spec start_agent(module() | nil, keyword()) :: DynamicSupervisor.on_start_child()
   def start_agent(module, opts) do
-    id = Keyword.get_lazy(opts, :id, &Omni.Agent.generate_id/0)
-
-    opts =
-      opts
-      |> Keyword.put(:id, id)
-      |> Keyword.put(:name, {:via, Registry, {@registry, id}})
+    {id, opts} = resolve_id(opts)
+    opts = Keyword.put(opts, :name, {:via, Registry, {@registry, id}})
 
     spec = %{
       id: {Omni.Agent, id},
@@ -117,6 +120,25 @@ defmodule Omni.Agent.Manager do
     }
 
     DynamicSupervisor.start_child(@dynamic_supervisor, spec)
+  end
+
+  # Pick the id that will go into the Registry, and ensure opts name it
+  # in a way the server will accept. :load / :new / :id from the caller
+  # pass through; :store-alone gets a generated id injected as :new;
+  # bare opts get a generated id injected as :id.
+  defp resolve_id(opts) do
+    cond do
+      id = Keyword.get(opts, :load) -> {id, opts}
+      id = Keyword.get(opts, :new) -> {id, opts}
+      id = Keyword.get(opts, :id) -> {id, opts}
+      Keyword.has_key?(opts, :store) -> generate_and_inject(opts, :new)
+      true -> generate_and_inject(opts, :id)
+    end
+  end
+
+  defp generate_and_inject(opts, key) do
+    id = Omni.Agent.generate_id()
+    {id, Keyword.put(opts, key, id)}
   end
 
   @doc """

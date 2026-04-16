@@ -25,7 +25,9 @@ defmodule Omni.Agent.Server do
 
     # Configuration (set at init, stable across turns)
     :module,
+    :store,
     :tool_timeout,
+    store_opts: [],
 
     # Subscribers: pids that receive agent events, monitored for DOWN cleanup.
     subscribers: MapSet.new(),
@@ -79,24 +81,21 @@ defmodule Omni.Agent.Server do
     Process.flag(:trap_exit, true)
 
     with :ok <- validate_init_opts(opts),
-         {:ok, model} <- resolve_model(opts[:model]),
+         {:ok, mode} <- resolve_mode(opts),
+         {:ok, hydrated} <- hydrate(mode, opts),
+         {:ok, model} <- resolve_model(opts[:model], hydrated[:model]),
          {:ok, private} <- call_init(module, opts) do
-      agent_state = %State{
-        id: opts[:id],
-        model: model,
-        system: opts[:system],
-        tools: opts[:tools] || [],
-        tree: opts[:tree] || %Tree{},
-        opts: Keyword.get(opts, :opts, []),
-        meta: opts[:meta] || %{},
-        private: private
-      }
+      state = build_state(hydrated, opts, model, private)
 
       server = %__MODULE__{
-        state: agent_state,
+        state: state,
         module: module,
+        store: opts[:store],
+        store_opts: store_opts(opts),
         tool_timeout: Keyword.get(opts, :tool_timeout, 5_000)
       }
+
+      :ok = save_initial_state(server, mode)
 
       {:ok, server}
     else
@@ -104,16 +103,171 @@ defmodule Omni.Agent.Server do
     end
   end
 
+  # Phase-1 rejection list first (fail loudly on legacy opts), then
+  # validate the :store/:new/:load/:id interactions.
   defp validate_init_opts(opts) do
     case Enum.find(@rejected_init_opts, &Keyword.has_key?(opts, &1)) do
-      nil -> :ok
+      nil -> validate_store_opts(opts)
       key -> {:error, {:invalid_opt, key}}
     end
   end
 
-  defp resolve_model({provider_id, model_id}), do: Model.get(provider_id, model_id)
-  defp resolve_model(%Model{} = model), do: {:ok, model}
-  defp resolve_model(nil), do: {:error, :missing_model}
+  defp validate_store_opts(opts) do
+    store? = Keyword.has_key?(opts, :store)
+    new? = Keyword.has_key?(opts, :new)
+    load? = Keyword.has_key?(opts, :load)
+    id? = Keyword.has_key?(opts, :id)
+
+    cond do
+      new? and load? ->
+        {:error, :conflicting_opts}
+
+      (new? or load?) and not store? ->
+        {:error, :store_required}
+
+      id? and (store? or new? or load?) ->
+        # :id is ephemeral-only; persistent agents use :new / :load.
+        {:error, {:invalid_opts, [:id]}}
+
+      load? ->
+        case for k <- [:tree, :meta], Keyword.has_key?(opts, k), do: k do
+          [] -> :ok
+          fields -> {:error, {:invalid_load_opts, fields}}
+        end
+
+      true ->
+        :ok
+    end
+  end
+
+  # Mode determines how state is sourced:
+  #   :ephemeral   — from opts only; no persistence
+  #   {:new, id}   — persistent, fresh; id from :new, or generated
+  #   {:load, id}  — persistent, hydrated from the store
+  defp resolve_mode(opts) do
+    store = Keyword.get(opts, :store)
+    new = Keyword.get(opts, :new)
+    load = Keyword.get(opts, :load)
+
+    cond do
+      is_binary(load) ->
+        {:ok, {:load, load}}
+
+      is_binary(new) ->
+        {:ok, {:new, new}}
+
+      not is_nil(store) ->
+        {:ok, {:new, Omni.Agent.generate_id()}}
+
+      true ->
+        {:ok, :ephemeral}
+    end
+  end
+
+  # Returns a map of persisted fields for use by build_state/4 and
+  # resolve_model/2. Empty map for ephemeral mode; probe-for-collision
+  # semantics for new-mode; loads from the store for load-mode.
+  defp hydrate(:ephemeral, _opts), do: {:ok, %{id: nil}}
+
+  defp hydrate({:new, id}, opts) do
+    store = Keyword.fetch!(opts, :store)
+
+    case store.load(id, store_opts(opts)) do
+      {:error, :not_found} -> {:ok, %{id: id}}
+      {:ok, _persisted} -> {:error, :already_exists}
+    end
+  end
+
+  defp hydrate({:load, id}, opts) do
+    store = Keyword.fetch!(opts, :store)
+
+    case store.load(id, store_opts(opts)) do
+      {:ok, persisted} -> {:ok, Map.put(persisted, :id, id)}
+      {:error, :not_found} -> {:error, :not_found}
+    end
+  end
+
+  # Apply the load-time field category policy:
+  #   - runtime-only (:tools, callback module, :tool_timeout, :store) — always from opts
+  #   - overridable  (:model, :system, :opts) — caller wins when present, else persisted
+  #   - owned        (:tree, :meta) — always from persisted (validator rejects caller overrides)
+  defp build_state(hydrated, opts, model, private) do
+    %State{
+      id: hydrated[:id] || opts[:id],
+      model: model,
+      system: opts[:system] || hydrated[:system],
+      tools: opts[:tools] || [],
+      tree: hydrated[:tree] || opts[:tree] || %Tree{},
+      opts: Keyword.get(opts, :opts) || hydrated[:opts] || [],
+      meta: hydrated[:meta] || opts[:meta] || %{},
+      private: private
+    }
+  end
+
+  # Lenient model resolution: caller's opt wins, persisted ref is the
+  # fallback, and if both fail we report :model_not_found.
+  defp resolve_model(caller_model, persisted_ref) do
+    case resolve_model_ref(caller_model) do
+      {:ok, model} ->
+        {:ok, model}
+
+      {:error, _} = err ->
+        case resolve_model_ref(persisted_ref) do
+          {:ok, model} -> {:ok, model}
+          {:error, _} -> fallback_model_error(caller_model, persisted_ref, err)
+        end
+    end
+  end
+
+  defp resolve_model_ref({provider_id, model_id}), do: Model.get(provider_id, model_id)
+  defp resolve_model_ref(%Model{} = model), do: {:ok, model}
+  defp resolve_model_ref(nil), do: {:error, :missing_model}
+
+  defp fallback_model_error(nil, nil, err), do: err
+  defp fallback_model_error(_caller, _persisted, _err), do: {:error, :model_not_found}
+
+  # Persist the resolved state on first init for persistent modes.
+  # This ensures a load-with-overrides writes the caller's values back
+  # immediately rather than waiting for the next set_state. Errors are
+  # swallowed silently — no subscribers exist yet to receive a :store
+  # event. SD4 refines this with proper error surfacing.
+  defp save_initial_state(%__MODULE__{store: nil}, _mode), do: :ok
+  defp save_initial_state(_server, :ephemeral), do: :ok
+
+  defp save_initial_state(%__MODULE__{store: store, store_opts: sopts, state: state}, _mode) do
+    state_data = %{
+      tree: state.tree,
+      model: Model.to_ref(state.model),
+      system: state.system,
+      opts: state.opts,
+      meta: state.meta
+    }
+
+    _ = store.save_state(state.id, state_data, sopts)
+    _ = if Tree.size(state.tree) > 0, do: store.save_tree(state.id, state.tree, sopts)
+    :ok
+  end
+
+  # Strip framework opts so adapters see only adapter-level options
+  # (e.g. :base_path for FileSystem). The behaviour isn't strict about
+  # this, but it keeps the contract clean — :store/:new/:load/:id are
+  # mode selectors, state-field names are handled by the server, and
+  # the inference :opts keyword is not adapter-relevant.
+  defp store_opts(opts) do
+    Keyword.drop(opts, [
+      :store,
+      :new,
+      :load,
+      :id,
+      :model,
+      :system,
+      :tools,
+      :tree,
+      :meta,
+      :opts,
+      :tool_timeout
+    ])
+  end
 
   # -- Calls --
 
@@ -908,7 +1062,7 @@ defmodule Omni.Agent.Server do
   defp maybe_resolve_model(state, opts) do
     case Keyword.fetch(opts, :model) do
       {:ok, model_ref} ->
-        case resolve_model(model_ref) do
+        case resolve_model_ref(model_ref) do
           {:ok, model} -> {:ok, %{state | model: model}}
           {:error, _} -> {:error, {:model_not_found, model_ref}}
         end
@@ -919,7 +1073,7 @@ defmodule Omni.Agent.Server do
   end
 
   defp maybe_resolve_field(:model, value) do
-    case resolve_model(value) do
+    case resolve_model_ref(value) do
       {:ok, model} -> {:ok, model}
       {:error, _} -> {:error, {:model_not_found, value}}
     end
