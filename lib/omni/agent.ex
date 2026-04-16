@@ -197,6 +197,17 @@ defmodule Omni.Agent do
       {:agent, pid, :error,       reason}                 # terminal error, agent goes idle
       {:agent, pid, :cancelled,   %Response{}}            # cancel was invoked
 
+  **Persistence events** — emitted when a store adapter write fails
+  (only when `:store` is attached):
+
+      {:agent, pid, :store, {:error, {:save_tree, reason}}}
+      {:agent, pid, :store, {:error, {:save_state, reason}}}
+
+  Write-through is best-effort: the agent keeps running on its in-memory
+  state and `prompt/3` / `set_state/2` return `:ok` regardless. Subscribers
+  that need durability guarantees watch for `:store` errors and react
+  (alert, retry, fall back to read-only). Successful writes are silent.
+
   `:step` fires after each LLM request-response completes, carrying the
   per-step `%Response{}` from `stream_text`. `:stop` and `:continue` fire at
   turn boundaries — `:continue` when `handle_turn/2` returns

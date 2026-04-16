@@ -383,8 +383,13 @@ defmodule Omni.Agent.Server do
         %__MODULE__{state: %{status: :idle}} = server
       ) do
     case apply_set_state(server.state, opts) do
-      {:ok, new_state} -> {:reply, :ok, %{server | state: new_state}}
-      {:error, _} = error -> {:reply, error, server}
+      {:ok, new_state} ->
+        server = %{server | state: new_state}
+        maybe_save_state(server, new_state)
+        {:reply, :ok, server}
+
+      {:error, _} = error ->
+        {:reply, error, server}
     end
   end
 
@@ -403,7 +408,10 @@ defmodule Omni.Agent.Server do
 
     case maybe_resolve_field(field, new_value) do
       {:ok, resolved} ->
-        {:reply, :ok, %{server | state: Map.put(server.state, field, resolved)}}
+        new_state = Map.put(server.state, field, resolved)
+        server = %{server | state: new_state}
+        maybe_save_state(server, new_state)
+        {:reply, :ok, server}
 
       {:error, _} = error ->
         {:reply, error, server}
@@ -550,7 +558,22 @@ defmodule Omni.Agent.Server do
 
   @impl GenServer
   def terminate(reason, server) do
+    flush_on_terminate(server)
     call_terminate(server.module, reason, server.state)
+  end
+
+  # Best-effort final save on graceful shutdown. Rare in practice —
+  # write-through covers the normal flow — but guards against any
+  # future op that stages state without an immediate save.
+  defp flush_on_terminate(%__MODULE__{store: nil}), do: :ok
+
+  defp flush_on_terminate(%__MODULE__{} = server) do
+    maybe_save_state(server, server.state)
+  catch
+    kind, reason ->
+      require Logger
+      Logger.warning("Omni.Agent terminate flush failed: #{inspect({kind, reason})}")
+      :ok
   end
 
   # -- Regenerate (idle-only, dispatched from handle_call) --
@@ -622,6 +645,7 @@ defmodule Omni.Agent.Server do
     }
 
     notify_push(server, node_id)
+    maybe_save_tree(server, node_id)
     evaluate_head(server)
   end
 
@@ -687,6 +711,7 @@ defmodule Omni.Agent.Server do
     }
 
     notify_push(server, node_id)
+    maybe_save_tree(server, node_id)
     notify(server, :step, response)
     evaluate_head(server)
   end
@@ -798,6 +823,7 @@ defmodule Omni.Agent.Server do
     {node_id, tree} = Tree.push_node(server.state.tree, user_message)
     server = %{server | state: %{server.state | tree: tree}}
     notify_push(server, node_id)
+    maybe_save_tree(server, node_id)
 
     evaluate_head(server)
   end
@@ -847,6 +873,7 @@ defmodule Omni.Agent.Server do
     {node_id, tree} = Tree.push_node(server.state.tree, user_message)
     server = %{server | state: %{server.state | tree: tree}}
     notify_push(server, node_id)
+    maybe_save_tree(server, node_id)
 
     evaluate_head(server)
   end
@@ -1130,6 +1157,47 @@ defmodule Omni.Agent.Server do
     notify(server, :message, node.message)
     notify(server, :node, node)
     :ok
+  end
+
+  # -- Persistence (write-through) --
+
+  # Broadcast a write-through failure to subscribers. The live agent
+  # continues operating on in-memory state; callers never see the error.
+  defp broadcast_store_error(server, op, reason) do
+    notify(server, :store, {:error, {op, reason}})
+    :ok
+  end
+
+  # Incrementally persist a single tree node. No-op when no store is
+  # attached. Errors surface as :store events, never propagate.
+  defp maybe_save_tree(%__MODULE__{store: nil}, _node_id), do: :ok
+
+  defp maybe_save_tree(%__MODULE__{} = server, node_id) do
+    opts = Keyword.put(server.store_opts, :new_node_ids, [node_id])
+
+    case server.store.save_tree(server.state.id, server.state.tree, opts) do
+      :ok -> :ok
+      {:error, reason} -> broadcast_store_error(server, :save_tree, reason)
+    end
+  end
+
+  # Persist the serialisable subset of state. Called on set_state and at
+  # terminate. No-op when no store is attached.
+  defp maybe_save_state(%__MODULE__{store: nil}, _state), do: :ok
+
+  defp maybe_save_state(%__MODULE__{} = server, %State{} = state) do
+    state_data = %{
+      tree: state.tree,
+      model: Model.to_ref(state.model),
+      system: state.system,
+      opts: state.opts,
+      meta: state.meta
+    }
+
+    case server.store.save_state(state.id, state_data, server.store_opts) do
+      :ok -> :ok
+      {:error, reason} -> broadcast_store_error(server, :save_state, reason)
+    end
   end
 
   # -- Callback dispatch --
