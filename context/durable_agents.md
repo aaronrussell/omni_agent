@@ -93,20 +93,30 @@ Persistence mode is explicit at start time via `:store` plus at most one of `:ne
 {:ok, pid} = Omni.Agent.start_link(store: Store.FileSystem, load: "x")
 ```
 
-`Omni.Agent.Supervisor.start_agent/1,2` accepts the same opts and adds registration + idle timeout:
+`Omni.Agent.Manager.start_agent/1,2` accepts the same opts and adds registration + idle timeout:
 
 ```elixir
-{:ok, pid} = Omni.Agent.Supervisor.start_agent(module \\ nil, opts)
+{:ok, pid} = Omni.Agent.Manager.start_agent(module \\ nil, opts)
 ```
 
-|                | `start_link`              | `Supervisor.start_agent`        |
+|                | `start_link`              | `Manager.start_agent`           |
 |----------------|---------------------------|---------------------------------|
-| Linkage        | Caller                    | `Omni.Agent.Supervisor`         |
+| Linkage        | Caller                    | `Omni.Agent.Manager`            |
 | Registry       | Not registered            | Registered under `:id`          |
 | Idle timeout   | No                        | Yes (configurable)              |
 | Typical use    | Tests, scripts, embedding | Durable sessions                |
 
-`Omni.Agent.Supervisor` and `Omni.Agent.Registry` are auto-started via `omni_agent`'s Application module — no setup required in the consumer's supervision tree.
+`Omni.Agent.Manager` is opt-in: consumers add it to their supervision tree to enable supervised, registry-backed agents.
+
+```elixir
+# in MyApp.Application
+children = [
+  Omni.Agent.Manager,
+  # ...
+]
+```
+
+Manager wraps an internal DynamicSupervisor and Registry; consumers don't reference those directly. Ephemeral `start_link` agents work without Manager being started.
 
 **Auto-generated id retrieval.** `start_link` and `start_agent` always return `{:ok, pid}` (GenServer contract). Callers who need the auto-generated id read it from the `subscribe/1` snapshot or via `get_state(pid, :id)`.
 
@@ -213,13 +223,25 @@ value = Omni.Agent.get_state(pid, key)
 
 ### Persistence management
 
+`Omni.Agent.Store` is a pure behaviour module — it defines the callbacks adapters must implement plus shared types, but has no public API. Callers invoke the adapter module directly:
+
 ```elixir
-{:ok, summaries} = Omni.Agent.Store.list(opts)
-:ok              = Omni.Agent.Store.delete(id, opts)
-exists?          = Omni.Agent.Store.exists?(id, opts)
+{:ok, summaries} = Omni.Agent.Store.FileSystem.list([])
+:ok              = Omni.Agent.Store.FileSystem.delete(id, [])
 ```
 
-`Store.delete` terminates any live agent with that id before wiping storage.
+There is no `exists?` callback — existence is answered by composing `Manager.start_agent(load: id)`, which returns `{:error, :not_found}` when the id isn't in the store.
+
+**Deleting a live agent's session is a two-call pattern:**
+
+```elixir
+:ok = Omni.Agent.Manager.stop_agent(id)
+:ok = Omni.Agent.Store.FileSystem.delete(id, [])
+```
+
+A single-call "stop and delete" API was considered and rejected: either it lives on `Store` (forcing the caller to pass the adapter module as an option just so the wrapper can dispatch on it — pure indirection) or on `Manager` (the same dance with the adapter). Until a cleaner shape emerges, the cross-cut is the caller's job.
+
+A caller that skips `stop_agent/1` still works: the supervised pid's idle timer eventually terminates it, and any write-through attempts after deletion surface as `:store` error events rather than crashing the agent.
 
 ---
 
@@ -267,24 +289,29 @@ Covers "app removed a model between sessions" without ceremony from the caller. 
 
 ### Registry conflicts
 
-`Supervisor.start_agent(store: s, load: "x")` when "x" is already registered returns `{:error, {:already_started, pid}}` (standard `via`-tuple semantics). Callers who want find-or-connect:
+`Manager.start_agent(store: s, load: "x")` when "x" is already registered returns `{:error, {:already_started, pid}}` (standard `via`-tuple semantics). Callers who want find-or-connect:
 
 ```elixir
-case Omni.Agent.Supervisor.start_agent(store: s, load: "x") do
+case Omni.Agent.Manager.start_agent(store: s, load: "x") do
   {:ok, pid} -> pid
   {:error, {:already_started, pid}} -> pid
 end
 ```
 
+The registry only protects Manager-supervised agents. Two unsupervised `start_link(load: "x")` calls targeting the same id are not prevented and will race writes — a documented footgun, the caller's responsibility.
+
 ### Load-if-exists-else-create
 
-There is no magic fallback. Callers who want that pattern compose explicitly:
+There is no magic fallback. Callers who want that pattern compose explicitly by attempting a load and creating on `:not_found`:
 
 ```elixir
-if Omni.Agent.Store.exists?("x", store: Store.FileSystem) do
-  Omni.Agent.Supervisor.start_agent(store: Store.FileSystem, load: "x")
-else
-  Omni.Agent.Supervisor.start_agent(store: Store.FileSystem, new: "x", model: m)
+case Omni.Agent.Manager.start_agent(store: Store.FileSystem, load: "x") do
+  {:ok, pid} ->
+    pid
+
+  {:error, :not_found} ->
+    {:ok, pid} = Omni.Agent.Manager.start_agent(store: Store.FileSystem, new: "x", model: m)
+    pid
 end
 ```
 
@@ -421,12 +448,11 @@ Pluggable persistence via a behaviour. Store is always passed at start time — 
 @callback save_tree(id :: String.t(), tree :: Tree.t(), opts :: keyword()) :: :ok | {:error, term()}
 @callback save_state(id :: String.t(), state :: state_data(), opts :: keyword()) :: :ok | {:error, term()}
 @callback load(id :: String.t(), opts :: keyword()) :: {:ok, state_data()} | {:error, :not_found}
-@callback exists?(id :: String.t(), opts :: keyword()) :: boolean()
 @callback list(opts :: keyword()) :: {:ok, [summary()]}
 @callback delete(id :: String.t(), opts :: keyword()) :: :ok | {:error, term()}
 ```
 
-Each store picks its own id format via `generate_id/0` — FileSystem can use ULIDs (sortable, nice for `list/1`), DETS might use integers, a Postgres adapter might use UUIDs. The framework does not pre-decide.
+Each store picks its own id format via `generate_id/0` — FileSystem uses crypto-random URL-safe strings, a DETS adapter might use integers, a Postgres adapter might use UUIDs. The framework does not pre-decide.
 
 Opts recognized across adapters:
 
@@ -453,38 +479,100 @@ Opts recognized across adapters:
 
 - Tree — saved on each append via `save_tree(id, tree, new_node_ids: [id])`
 - State — saved on each change to persisted fields (from `set_state`, callback returns, or `add_tool`/`remove_tool`), via `save_state`
-- Errors broadcast a `:store` event (`{:error, {op, reason}}`) so subscribers know persistence diverged from in-memory state. Events continue firing — in-memory state is still the truth for the live session. Return values of triggering APIs also carry the error for callers who want to surface it.
+- Errors broadcast a `:store` event (`{:error, {op, reason}}`) so subscribers know persistence diverged from in-memory state. Events continue firing — in-memory state is still the truth for the live session.
+
+Triggering APIs (`set_state/2,3`, `add_tool/2`, `remove_tool/2`) return `:ok` regardless of persistence outcome. The GenServer state was updated successfully; storage is a side effect surfaced via the `:store` event. Subscribers that need durability guarantees should listen for `:store` errors.
 
 ### Bundled adapters
 
 - `Omni.Agent.Store.FileSystem` — JSON / JSONL per-agent directory. Ported from `OmniUI.Store.FileSystem` with typed state shape.
-- `Omni.Agent.Store.DETS` — optional, Phase 3 decision (ship alongside FileSystem, or defer until JSON format proves painful).
+- `Omni.Agent.Store.DETS` — deferred. Revisit if JSON format proves painful at scale.
+
+### FileSystem layout
+
+Per-agent directory with two files:
+
+```
+{base_path}/
+  {agent_id}/
+    tree.jsonl     # one line per tree node
+    meta.json      # session config + timestamps
+```
+
+**`tree.jsonl`** — one node per line, JSON-encoded. Each node carries `id`, `parent_id`, `message` (via `Omni.Codec.encode/1`), and `usage`. Appended on every node commit.
+
+**`meta.json`** shape:
+
+```json
+{
+  "title": "Optional title",
+  "created_at": "2026-04-16T12:00:00Z",
+  "updated_at": "2026-04-16T12:34:56Z",
+  "tree": {
+    "path": [1, 3, 5],
+    "cursors": [[1, 3], [3, 5]]
+  },
+  "model": {"provider": "anthropic", "id": "claude-sonnet-4-5-20250514"},
+  "system": "You are ...",
+  "opts": {"__etf": "<base64>"},
+  "meta": {"__etf": "<base64>"}
+}
+```
+
+- `title` is duplicated at top level for human inspection but the canonical value lives inside the `meta` ETF blob (the encoder is the only writer, so they can't drift).
+- `model` is encoded as readable JSON (`{provider, id}`) — no ETF needed.
+- `system` is a plain JSON string.
+- `opts` and `meta` are ETF-base64 blobs (preserve atom/tuple/keyword fidelity) via `Omni.Codec.encode_term/1`.
+- `tree.path` and `tree.cursors` are stored in meta because the canonical node data is in `tree.jsonl`.
+
+**Atomic write for `meta.json`** — write to `meta.json.tmp` then `:file.rename/2`. POSIX rename is atomic on the same filesystem; protects against truncated metadata on crash.
+
+**Tolerant load for `tree.jsonl`** — silently skip any line that fails to parse. The realistic failure mode is "writer crashed mid-append" (trailing line truncated); skip-any handles it without a repair pass. Middle-line corruption (vanishingly rare for an append-only single-writer file) would surface as broken tree behaviour at runtime rather than be silently accepted as data.
+
+**`generate_id/0`** — `:crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)` (16-char URL-safe string, ~96 bits of entropy). Lex-sortable IDs (e.g. ULID) are an option for future revisions if listing strategy ever benefits from them.
+
+**`list/1` summary fields** — `%{id, title, created_at, updated_at}`. Read from `meta.json` only; tree.jsonl is not opened during listing.
 
 ---
 
-## Supervisor & Registry
+## Manager
 
-Auto-started via `omni_agent`'s Application module:
+`Omni.Agent.Manager` is the single entry point for supervised, registry-backed agents. Consumers add it to their supervision tree to opt in:
 
 ```elixir
+# in MyApp.Application
 children = [
-  {Registry, keys: :unique, name: Omni.Agent.Registry},
-  Omni.Agent.Supervisor,
+  Omni.Agent.Manager,
   # ...
 ]
 ```
 
-Cost is negligible when unused. Consumers get `Supervisor.start_agent/2` working out of the box.
+Manager is a `Supervisor` whose children are an internal `DynamicSupervisor` and a `Registry`. Both are registered under name atoms (e.g. `Omni.Agent.DynamicSupervisor`, `Omni.Agent.Registry`); consumers never reference them directly.
 
-`Omni.Agent.Supervisor` is a `DynamicSupervisor` wrapper. Supervised agents use `restart: :temporary` — crashed agents aren't auto-restarted. Partial streaming state is lost on crash; persisted state survives. Next `start_agent` call loads fresh.
+Public API:
+
+```elixir
+{:ok, pid} = Omni.Agent.Manager.start_agent(opts)
+{:ok, pid} = Omni.Agent.Manager.start_agent(module, opts)
+:ok        = Omni.Agent.Manager.stop_agent(id)
+
+[id]       = Omni.Agent.Manager.list_running()
+pid | nil  = Omni.Agent.Manager.lookup(id)
+```
+
+`list_running/0` and `lookup/1` answer "what is currently registered" by querying the inner Registry — cheap. Useful for UIs that want to overlay "currently running" state on top of a `Store.list/1` listing of all sessions. Callers who want a boolean predicate compose it as `lookup(id) != nil` or `id in list_running()`.
+
+Supervised agents use `restart: :temporary` — crashed agents aren't auto-restarted. Partial streaming state is lost on crash; persisted state survives. The next `start_agent` call loads fresh.
+
+Ephemeral agents (`Omni.Agent.start_link/1,2`) work without Manager being started. Only opt in if you need supervision, registry lookup, or idle timeouts.
 
 ---
 
 ## Lifecycle
 
 - `start_link` agents live as long as their caller (linked)
-- `Supervisor.start_agent` agents live indefinitely; they terminate when the idle timer fires AND no subscribers remain AND no turn is streaming ("don't terminate while cooking")
-- Idle timeout is configurable per-agent; default TBD (likely 5–15 min)
+- `Manager.start_agent` agents live indefinitely; they terminate when the idle timer fires AND no subscribers remain AND no turn is streaming ("don't terminate while cooking")
+- Idle timeout is configurable per-agent at start time and via application config; default 10 minutes
 - `Store.delete(id)` terminates any live agent with that id before wiping storage
 - Crashed supervised agents aren't restarted — next `start_agent` loads from persistence
 
@@ -564,29 +652,39 @@ Build and test incrementally. Each phase is shippable.
 - **`:continue` response excludes the continuation user message.** Preserved from the pre-tree behaviour. The `:continue` response is the turn slice "so far" (user prompt → assistant of the completed step). The continuation user message is pushed after, and the final `:stop` response carries the full extended slice including it. Semantically consistent with step/turn boundaries: a continuation without a following assistant would be a partial step, not a turn.
 - **Node id algorithm kept as `size + 1`.** Briefly considered a separate `:next_id` counter for robustness against manual node deletion, but under the append-only invariant `size + 1` is strictly safer (no risk of the counter drifting from the node map). Integer ids are cheap in events, in the `new_node_ids` persistence hint, and readable in test output; random ids (ULID/UUID) deferred until cross-agent tree merging becomes a real need.
 
-### Phase 3 — Persistence + Supervisor
+### Phase 3 — Persistence + Manager
 
-- `Omni.Agent.Store` behaviour + `Omni.Agent.Store.FileSystem`
-- `Omni.Agent.Supervisor` + `Omni.Agent.Registry`
-- `omni_agent` Application module auto-starts both
-- `Omni.Agent.Supervisor.start_agent/2`
+- `Omni.Agent.Store` behaviour + `Omni.Agent.Store.FileSystem` (atomic-rename meta, skip-any tolerant tree load, crypto-random `generate_id`)
+- `Omni.Agent.Manager` (opt-in `Supervisor` wrapping a DynamicSupervisor + Registry under registered name atoms)
+- `Omni.Agent.Manager.start_agent/1,2`, `stop_agent/1`, `list_running/0`, `lookup/1`
 - Start semantics: per-field category policy, four init outcomes, model fallback
 - Write-through: `save_tree` on append, `save_state` on config change
-- `Store.list/1`, `Store.delete/1`, `Store.exists?/2`
-- Idle termination timer (supervised agents only)
-- DETS adapter decision during this phase (ship or defer)
+- `Store` as a pure behaviour module (no public wrappers); callers use the adapter module (e.g. `Store.FileSystem.list/1`, `Store.FileSystem.delete/2`) directly
+- Idle termination timer (supervised agents only; default 10 min, app-configurable)
+- DETS adapter — deferred (not shipped this phase)
+
+**Sub-deliverable order:**
+
+1. `Store` behaviour + `FileSystem` adapter (port from `OmniUI.Store.FileSystem`, adapt to typed `state_data` shape, add atomic-rename and skip-any tolerant load)
+2. `Manager` module (Supervisor + inner DynamicSupervisor + Registry, public lifecycle and inspection API)
+3. Start opts validation + `:new`/`:load` semantics + lenient model resolution
+4. Write-through wiring in server + `:store` event broadcasting on errors
+5. Idle termination timer
 
 **Key tests:**
 
-- Round-trip: create → terminate → `start_agent(id)` reloads tree/system/opts/meta/model
+- Round-trip: create → terminate → `Manager.start_agent(load: id)` reloads tree/system/opts/meta/model
 - Incremental tree save: `save_tree` receives `new_node_ids` hint for appends
-- State conflict: `start_agent(id: "x", tree: t)` with data present errors
-- Overridable fields: `start_agent(id: "x", model: m2)` with persisted m1 uses m2; persists m2 on first save
+- Atomic-rename for `meta.json` survives an interrupted write
+- Skip-any tolerant load drops a truncated trailing line from `tree.jsonl`
+- State conflict: `Manager.start_agent(load: "x", tree: t)` with data present errors
+- Overridable fields: `Manager.start_agent(load: "x", model: m2)` with persisted m1 uses m2; persists m2 on first save
 - Model fallback: unresolvable persisted ref + caller `:model` opt → caller wins
-- Registry conflict: second `start_agent(id: "x")` returns `{:already_started, pid}`
+- Registry conflict: second `Manager.start_agent(load: "x")` returns `{:already_started, pid}`
+- `list_running/0` reflects supervised agents; `lookup/1` returns pid or nil
 - `Store.delete` terminates live agent + wipes storage
-- No-op adapter: `start_link`/`save_state` work without persistence
-- Save errors: adapter returns `{:error, _}`; agent doesn't crash
+- No-op (no `:store`): `start_link`/`save_state` work without persistence
+- Save errors: adapter returns `{:error, _}`; agent doesn't crash; `:store` event fires; `set_state` still returns `:ok`
 - Idle timer: fires only when no subscribers AND no turn streaming
 
 ### Phase 4 — Config events, tool helpers, lenient model resolution refinements
@@ -617,7 +715,8 @@ Build and test incrementally. Each phase is shippable.
 - **`edit/3` API** — compose `navigate` + `prompt`
 - **`update/2` for session-level config** — use `set_state/2,3`
 - **`thinking` as first-class field** — stays an inference option in `:opts`
-- **Consumer adds Registry and Supervisor to their own app tree** — now auto-started by `omni_agent`'s Application module
+- **`omni_agent` Application auto-starts Registry + Supervisor** — reverted; opt-in via `Omni.Agent.Manager` in the consumer's supervision tree. Ephemeral `start_link` use shouldn't pay for an unused supervision tree, and consumers should control startup order
+- **Separate `Omni.Agent.Supervisor` and `Omni.Agent.Registry` public modules** — replaced by a single `Omni.Agent.Manager` module that wraps both as internal children under registered name atoms
 
 ### Superseded during design discussion
 
@@ -641,27 +740,27 @@ Build and test incrementally. Each phase is shippable.
 lib/omni/
 ├── agent.ex                          # Public module: behaviour, use macro, public API
 └── agent/
-    ├── application.ex                # Starts Registry + Supervisor
     ├── state.ex                      # Public state struct
     ├── snapshot.ex                   # Snapshot struct returned by subscribe/1
     ├── server.ex                     # Internal GenServer (@moduledoc false)
     ├── step.ex                       # (existing) Step task
     ├── executor.ex                   # (existing) Executor task
     ├── tree.ex                       # Branching message tree (ported)
-    ├── supervisor.ex                 # DynamicSupervisor + start_agent/2
-    ├── registry.ex                   # Registry wrapper (or just documented setup)
+    ├── manager.ex                    # Opt-in Supervisor: wraps inner DynamicSupervisor + Registry,
+    │                                 #   exposes start_agent / stop_agent / list_running / lookup
     ├── store.ex                      # Store behaviour + public API
     └── store/
-        ├── file_system.ex            # JSON/JSONL adapter (ported)
-        └── dets.ex                   # (optional) DETS adapter
+        └── file_system.ex            # JSON/JSONL adapter (ported)
 ```
+
+The inner DynamicSupervisor and Registry are started by `Manager`'s `init/1` under registered name atoms (e.g. `Omni.Agent.DynamicSupervisor`, `Omni.Agent.Registry`). They are not separate public modules.
 
 ---
 
 ## Open items to resolve during implementation
 
-- **DETS adapter** — ship alongside FileSystem or defer. Default: defer unless JSON format proves painful.
-- **Idle timeout default** — pick a reasonable value (likely 5–15 min). Tests use ~50ms.
+- ~~**DETS adapter** — ship alongside FileSystem or defer.~~ Resolved during P3 design: deferred. JSON/JSONL is sufficient and debuggable; revisit if it proves painful at scale.
+- ~~**Idle timeout default** — pick a reasonable value (likely 5–15 min).~~ Resolved during P3 design: 10 minutes default, configurable per-agent at start time and via application config. Tests use ~50ms.
 - ~~**`turn_start_node_id` lifecycle across pause/resume**~~ — resolved in P2: cursor survives pause/resume untouched (test in `pause_resume_test.exs` asserts the final `:stop` response carries the whole turn slice).
 
 ---

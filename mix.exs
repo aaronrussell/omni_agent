@@ -31,7 +31,10 @@ defmodule Omni.Agent.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:omni, "~> 1.2"},
+      # Path dep during P3 development — Omni.Codec (used by the FileSystem
+      # store adapter) lives on omni main, post-1.2.0. Switch back to hex
+      # before releasing.
+      {:omni, path: "../omni"},
 
       # dev dependencies
       {:ex_doc, "~> 0.40.1", only: :dev, runtime: false, warn_if_outdated: true},
