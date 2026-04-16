@@ -247,11 +247,32 @@ A caller that skips `stop_agent/1` still works: the supervised pid's idle timer 
 
 ## Start semantics
 
-Three modes, resolved from opts at `init/1`:
+Agent startup has two orthogonal dimensions:
 
-- **Ephemeral** — no `:store` opt. `:id` is `nil`. Nothing persisted. Tool-spawned subagents and one-offs.
-- **New** — `:store` opt present, `:new` absent or provides an explicit id. Creates a fresh agent. Auto-generated id if `:new` omitted (via Store callback). Errors if the explicit id already exists.
-- **Load** — `:store` + `:load "x"`. Hydrates state from the store. Errors if not found.
+**Identity** — does the agent have a stable `:id`?
+
+- `start_link/1,2` — `:id` optional. Caller can pass one; otherwise `state.id` is `nil`.
+- `Manager.start_agent/1,2` — `:id` required (for registration). Caller passes `:id`, or the Manager auto-generates one via `Omni.Agent.generate_id/0`.
+
+**Persistence** — does the agent write state to a store?
+
+- No `:store` opt — ephemeral. Nothing persisted. `state.id` (if present) lives only in-memory.
+- `:store` opt present — persistent. Tree and config are written through on each change.
+
+The two dimensions compose freely:
+
+| | `start_link` | `Manager.start_agent` |
+|---|---|---|
+| No `:store` | ephemeral, anonymous (or caller-assigned id) | supervised, ephemeral, registered by id |
+| `:store` | persistent, linked to caller | supervised, persistent, registered |
+
+**Id generation is framework-level.** `Omni.Agent.generate_id/0` returns a 16-character URL-safe base64 string. Adapters don't dictate id format — they receive whatever string they're handed. Manager auto-generates when `:id` is missing; in a future revision, the agent server will do the same when `:store` is present without `:new`/`:load`.
+
+**Store-bound start opts** — `:new` and `:load` attach explicit persistence semantics and require `:store`:
+
+- **`:store` alone** — create a new persisted agent; id auto-generated.
+- **`:store` + `:new "x"`** — create with explicit id; errors if `"x"` already exists.
+- **`:store` + `:load "x"`** — hydrate from the store; errors if `"x"` not found.
 
 Opt validation rules are listed under "Start opt errors" in the table above. Beyond those, opts are filtered per-field based on mode.
 
@@ -444,7 +465,6 @@ Pluggable persistence via a behaviour. Store is always passed at start time — 
   meta:   map()
 }
 
-@callback generate_id() :: String.t()
 @callback save_tree(id :: String.t(), tree :: Tree.t(), opts :: keyword()) :: :ok | {:error, term()}
 @callback save_state(id :: String.t(), state :: state_data(), opts :: keyword()) :: :ok | {:error, term()}
 @callback load(id :: String.t(), opts :: keyword()) :: {:ok, state_data()} | {:error, :not_found}
@@ -452,7 +472,7 @@ Pluggable persistence via a behaviour. Store is always passed at start time — 
 @callback delete(id :: String.t(), opts :: keyword()) :: :ok | {:error, term()}
 ```
 
-Each store picks its own id format via `generate_id/0` — FileSystem uses crypto-random URL-safe strings, a DETS adapter might use integers, a Postgres adapter might use UUIDs. The framework does not pre-decide.
+Id generation is framework-level — `Omni.Agent.generate_id/0` returns a URL-safe crypto string that any adapter can consume. Adapters receive whatever string they're handed (including caller-supplied ids) and don't dictate format.
 
 Opts recognized across adapters:
 
@@ -529,7 +549,7 @@ Per-agent directory with two files:
 
 **Tolerant load for `tree.jsonl`** — silently skip any line that fails to parse. The realistic failure mode is "writer crashed mid-append" (trailing line truncated); skip-any handles it without a repair pass. Middle-line corruption (vanishingly rare for an append-only single-writer file) would surface as broken tree behaviour at runtime rather than be silently accepted as data.
 
-**`generate_id/0`** — `:crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)` (16-char URL-safe string, ~96 bits of entropy). Lex-sortable IDs (e.g. ULID) are an option for future revisions if listing strategy ever benefits from them.
+**Id format** — `Omni.Agent.generate_id/0` returns a 16-character URL-safe base64 string (`:crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)`, ~96 bits of entropy). Lex-sortable IDs (e.g. ULID) are an option for future revisions if listing strategy ever benefits from them.
 
 **`list/1` summary fields** — `%{id, title, created_at, updated_at}`. Read from `meta.json` only; tree.jsonl is not opened during listing.
 
@@ -654,7 +674,8 @@ Build and test incrementally. Each phase is shippable.
 
 ### Phase 3 — Persistence + Manager
 
-- `Omni.Agent.Store` behaviour + `Omni.Agent.Store.FileSystem` (atomic-rename meta, skip-any tolerant tree load, crypto-random `generate_id`)
+- `Omni.Agent.Store` behaviour + `Omni.Agent.Store.FileSystem` (atomic-rename meta, skip-any tolerant tree load)
+- `Omni.Agent.generate_id/0` framework helper (crypto-random URL-safe string); callers in Manager and Server init
 - `Omni.Agent.Manager` (opt-in `Supervisor` wrapping a DynamicSupervisor + Registry under registered name atoms)
 - `Omni.Agent.Manager.start_agent/1,2`, `stop_agent/1`, `list_running/0`, `lookup/1`
 - Start semantics: per-field category policy, four init outcomes, model fallback
@@ -722,7 +743,7 @@ Build and test incrementally. Each phase is shippable.
 
 - **Load-or-create based on id presence** — replaced by explicit `:new` / `:load` start opts; no magic dispatch
 - **Global `Omni.Agent.Store` config** — removed; store is always passed at start time
-- **`:id` always present, auto-generated if absent** — `:id` is `nil` for ephemeral agents; generation moved to the Store (`generate_id/0` callback)
+- **`:id` always present, auto-generated if absent** — `:id` is `nil` for `start_link` ephemeral agents; Manager always has an id (needed for registration). Id generation is a framework helper (`Omni.Agent.generate_id/0`), not a Store callback — the previous "Store owns id format" design was invented abstraction
 - **Framework-level ULID vs UUID decision** — deferred to per-Store choice
 - **`:state_conflict` error** — replaced by `:already_exists`, `:not_found`, `{:invalid_load_opts, [...]}`
 - **`:scope` opt on Store** — dropped; apps namespace their own ids if multi-tenant

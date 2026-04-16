@@ -14,9 +14,13 @@ defmodule Omni.Agent.Store do
       {:ok, summaries} = Omni.Agent.Store.FileSystem.list([])
       :ok              = Omni.Agent.Store.FileSystem.delete(id, [])
 
-  `generate_id/0`, `save_tree/3`, `save_state/3`, and `load/2` are invoked
-  by the agent server during init and write-through; they are part of the
-  behaviour for adapter authors but rarely called from application code.
+  `save_tree/3`, `save_state/3`, and `load/2` are invoked by the agent
+  server during init and write-through; they are part of the behaviour
+  for adapter authors but rarely called from application code.
+
+  Agent ids are framework-level and store-agnostic — callers who need
+  one call `Omni.Agent.generate_id/0`. Adapters receive whatever id
+  string they're handed and don't dictate its format.
 
   ## Deleting a live agent's session
 
@@ -77,14 +81,6 @@ defmodule Omni.Agent.Store do
           created_at: DateTime.t(),
           updated_at: DateTime.t()
         }
-
-  @doc """
-  Generates a fresh agent identifier.
-
-  Called by the agent server (or by `Omni.Agent.Manager`) when a
-  persistent agent is started without an explicit id.
-  """
-  @callback generate_id() :: id()
 
   @doc """
   Persists the conversation tree for `id`.

@@ -512,6 +512,19 @@ defmodule Omni.Agent do
   end
 
   @doc """
+  Generates a fresh agent id.
+
+  Returns a 16-character URL-safe base64 string with ~96 bits of entropy,
+  suitable for use as an `:id` start option or as a `Registry` key. The
+  id format is framework-level and store-agnostic — any `Omni.Agent.Store`
+  adapter can consume it.
+  """
+  @spec generate_id() :: String.t()
+  def generate_id do
+    :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
+  end
+
+  @doc """
   Subscribes the calling process to agent events and returns a snapshot.
 
   The snapshot is a point-in-time view the caller can use to render current

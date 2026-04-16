@@ -65,11 +65,6 @@ defmodule Omni.Agent.Store.FileSystem do
   alias Omni.Agent.Tree
 
   @impl true
-  def generate_id do
-    :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
-  end
-
-  @impl true
   def save_tree(id, %Tree{} = tree, opts \\ []) do
     dir = agent_dir(id, opts)
     tree_path = Path.join(dir, "tree.jsonl")

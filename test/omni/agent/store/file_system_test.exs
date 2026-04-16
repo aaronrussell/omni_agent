@@ -56,20 +56,6 @@ defmodule Omni.Agent.Store.FileSystemTest do
     |> String.split("\n", trim: true)
   end
 
-  describe "generate_id/0" do
-    test "returns a url-safe string with ~16 chars" do
-      id = FileSystem.generate_id()
-      assert is_binary(id)
-      assert byte_size(id) == 16
-      assert id =~ ~r/^[A-Za-z0-9_-]+$/
-    end
-
-    test "returns distinct values" do
-      ids = for _ <- 1..20, do: FileSystem.generate_id()
-      assert ids == Enum.uniq(ids)
-    end
-  end
-
   describe "save_tree + load round-trip" do
     test "saves and loads a simple tree", ctx do
       tree = sample_tree()
