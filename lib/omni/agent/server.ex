@@ -27,7 +27,10 @@ defmodule Omni.Agent.Server do
     :module,
     :store,
     :tool_timeout,
+    :idle_timeout,
     store_opts: [],
+    supervised: false,
+    idle_timer_ref: nil,
 
     # Subscribers: pids that receive agent events, monitored for DOWN cleanup.
     subscribers: MapSet.new(),
@@ -92,12 +95,14 @@ defmodule Omni.Agent.Server do
         module: module,
         store: opts[:store],
         store_opts: store_opts(opts),
-        tool_timeout: Keyword.get(opts, :tool_timeout, 5_000)
+        tool_timeout: Keyword.get(opts, :tool_timeout, 5_000),
+        supervised: Keyword.get(opts, :supervised, false),
+        idle_timeout: Keyword.get(opts, :idle_timeout)
       }
 
       :ok = save_initial_state(server, mode)
 
-      {:ok, server}
+      {:ok, maybe_arm_idle_timer(server)}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -353,7 +358,7 @@ defmodule Omni.Agent.Server do
           monitors: Map.put(server.monitors, ref, pid)
       }
 
-      {:reply, {:ok, snapshot}, server}
+      {:reply, {:ok, snapshot}, maybe_arm_idle_timer(server)}
     end
   end
 
@@ -371,7 +376,7 @@ defmodule Omni.Agent.Server do
             monitors: Map.delete(server.monitors, ref)
         }
 
-        {:reply, :ok, server}
+        {:reply, :ok, maybe_arm_idle_timer(server)}
     end
   end
 
@@ -545,9 +550,32 @@ defmodule Omni.Agent.Server do
         {:noreply, server}
 
       {pid, monitors} ->
-        {:noreply,
-         %{server | subscribers: MapSet.delete(server.subscribers, pid), monitors: monitors}}
+        server = %{
+          server
+          | subscribers: MapSet.delete(server.subscribers, pid),
+            monitors: monitors
+        }
+
+        {:noreply, maybe_arm_idle_timer(server)}
     end
+  end
+
+  # Idle timer fired. Re-verify the ref (a late-arriving message from a
+  # canceled timer is ignored) and re-check conditions (a prompt could
+  # have arrived after the timer fired but before we processed it).
+  def handle_info(
+        {:idle_timeout, ref},
+        %__MODULE__{idle_timer_ref: {ref, _}} = server
+      ) do
+    if idle_timer_conditions?(server) do
+      {:stop, :normal, server}
+    else
+      {:noreply, %{server | idle_timer_ref: nil}}
+    end
+  end
+
+  def handle_info({:idle_timeout, _stale}, server) do
+    {:noreply, server}
   end
 
   def handle_info(_msg, server) do
@@ -637,12 +665,14 @@ defmodule Omni.Agent.Server do
 
     {node_id, tree} = Tree.push_node(server.state.tree, user_message)
 
-    server = %{
-      server
-      | state: %{server.state | status: :running, step: 0, tree: tree},
-        turn_start_node_id: node_id,
-        prompt_opts: prompt_opts
-    }
+    server =
+      %{
+        server
+        | state: %{server.state | status: :running, step: 0, tree: tree},
+          turn_start_node_id: node_id,
+          prompt_opts: prompt_opts
+      }
+      |> cancel_idle_timer()
 
     notify_push(server, node_id)
     maybe_save_tree(server, node_id)
@@ -1128,6 +1158,7 @@ defmodule Omni.Agent.Server do
         partial_message: nil,
         paused_info: nil
     }
+    |> maybe_arm_idle_timer()
   end
 
   defp max_steps_reached?(server) do
@@ -1180,6 +1211,43 @@ defmodule Omni.Agent.Server do
       {:error, reason} -> broadcast_store_error(server, :save_tree, reason)
     end
   end
+
+  # -- Idle termination timer --
+
+  # Only Manager-supervised agents (i.e. `supervised: true` set by the
+  # Manager via an internal start opt) are eligible to auto-terminate.
+  # Plain `start_link` agents never arm even if `:idle_timeout` is set.
+  defp maybe_arm_idle_timer(%__MODULE__{supervised: false} = server), do: server
+  defp maybe_arm_idle_timer(%__MODULE__{idle_timeout: nil} = server), do: server
+
+  defp maybe_arm_idle_timer(%__MODULE__{} = server) do
+    if idle_timer_conditions?(server) do
+      server = cancel_idle_timer(server)
+      ref = make_ref()
+      timer = Process.send_after(self(), {:idle_timeout, ref}, server.idle_timeout)
+      %{server | idle_timer_ref: {ref, timer}}
+    else
+      cancel_idle_timer(server)
+    end
+  end
+
+  # The timer fires only when the agent is idle, unobserved, and
+  # not mid-stream or mid-tool-execution.
+  defp idle_timer_conditions?(%__MODULE__{} = server) do
+    server.state.status == :idle and
+      MapSet.size(server.subscribers) == 0 and
+      is_nil(server.step_task) and
+      is_nil(server.executor_task)
+  end
+
+  defp cancel_idle_timer(%__MODULE__{idle_timer_ref: nil} = server), do: server
+
+  defp cancel_idle_timer(%__MODULE__{idle_timer_ref: {_ref, timer}} = server) do
+    Process.cancel_timer(timer)
+    %{server | idle_timer_ref: nil}
+  end
+
+  # -- Persistence --
 
   # Persist the serialisable subset of state. Called on set_state and at
   # terminate. No-op when no store is attached.

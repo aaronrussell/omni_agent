@@ -17,6 +17,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **`regenerate/1`** — re-run a step from the current head. At an assistant head, the new assistant is pushed as a sibling of the previous (both branches preserved). At a user head, the existing user node is reused (retry-after-error path). To regenerate from a specific node, compose `navigate/2` + `regenerate/1`.
 - **`:node` event** — `{:agent, pid, :node, %{id, parent_id, message, usage}}` fires alongside `:message` on every tree append, giving tree-aware consumers the metadata they need to mirror the structure.
 - **`:tree` event** — `{:agent, pid, :tree, %Omni.Agent.Tree{}}` fires on non-incremental changes (navigate, regenerate, cancel/error rewind).
+- **`Omni.Agent.Store` behaviour** — pluggable persistence with callbacks for `save_tree/3`, `save_state/3`, `load/2`, `list/1`, `delete/2`. Adapter modules are the callers' concrete surface; the behaviour has no public wrapper.
+- **`Omni.Agent.Store.FileSystem`** — JSONL / JSON adapter. Tree appends are incremental; meta is written atomically via `.tmp` + rename; tolerant load silently drops truncated trailing lines. Configurable base path (default `priv/omni_agent/sessions`).
+- **`Omni.Agent.Manager`** — opt-in `Supervisor` wrapping a `Registry` and `DynamicSupervisor`. Public API: `start_agent/1,2`, `stop_agent/1`, `lookup/1`, `list_running/0`. Agents register under `{:via, Registry, {Omni.Agent.Registry, id}}`; children are `restart: :temporary`.
+- **`Omni.Agent.generate_id/0`** — framework-level URL-safe crypto id generator (~96 bits of entropy). Used by Manager when no id is supplied; callers can use it to pre-compute ids too.
+- **`:store`, `:new`, `:load` start options** — attach a store adapter for write-through persistence and choose new-mode or load-mode at startup. Load-mode hydrates tree/system/opts/meta/model from the store with runtime/overridable/owned field categories. Model resolution on load is lenient: persisted ref first, caller's `:model` as fallback, `{:error, :model_not_found}` if neither resolves.
+- **Write-through persistence.** Tree appends and `set_state/2,3` mutations fire `save_tree`/`save_state` on the adapter. Write-through is best-effort — adapter errors broadcast a new `:store` event but never crash the agent or propagate to callers.
+- **`:store` event** — `{:agent, pid, :store, {:error, {:save_tree | :save_state, reason}}}` fires when a persistence write fails. Subscribers that need durability guarantees watch for this.
+- **Idle termination timer** — Manager-supervised agents auto-terminate after a period of being idle with no subscribers and no in-flight task. 10-minute default; configurable per-agent (`idle_timeout:` start option) or globally (`config :omni_agent, Omni.Agent.Manager, idle_timeout: ...`). Plain `start_link` agents never auto-terminate.
 
 ### Changed
 

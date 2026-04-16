@@ -41,6 +41,25 @@ defmodule Omni.Agent.Manager do
   state survives. The next `start_agent` call loads fresh from the
   store.
 
+  ## Idle termination
+
+  Manager-supervised agents auto-terminate after a period of being idle
+  with no subscribers and no in-flight step or executor task. The
+  timeout defaults to 10 minutes and is configurable per-agent or
+  globally:
+
+      # per-agent
+      Omni.Agent.Manager.start_agent(store: s, idle_timeout: 30_000)
+
+      # application-wide default
+      config :omni_agent, Omni.Agent.Manager, idle_timeout: 1_800_000
+
+  On timer fire the agent stops with reason `:normal`, so `terminate/2`
+  runs (including the final persistence flush). Plain
+  `Omni.Agent.start_link/1,2` agents never auto-terminate regardless of
+  `:idle_timeout` — they're linked to their caller, and termination is
+  the caller's responsibility.
+
   ## Id resolution
 
   Every supervised agent has an id (registration requires one).
@@ -66,6 +85,7 @@ defmodule Omni.Agent.Manager do
 
   @registry Omni.Agent.Registry
   @dynamic_supervisor Omni.Agent.DynamicSupervisor
+  @default_idle_timeout 600_000
 
   @doc """
   Starts the Manager under the consumer's supervision tree.
@@ -111,7 +131,12 @@ defmodule Omni.Agent.Manager do
   @spec start_agent(module() | nil, keyword()) :: DynamicSupervisor.on_start_child()
   def start_agent(module, opts) do
     {id, opts} = resolve_id(opts)
-    opts = Keyword.put(opts, :name, {:via, Registry, {@registry, id}})
+
+    opts =
+      opts
+      |> Keyword.put(:name, {:via, Registry, {@registry, id}})
+      |> Keyword.put(:supervised, true)
+      |> Keyword.put_new(:idle_timeout, default_idle_timeout())
 
     spec = %{
       id: {Omni.Agent, id},
@@ -120,6 +145,11 @@ defmodule Omni.Agent.Manager do
     }
 
     DynamicSupervisor.start_child(@dynamic_supervisor, spec)
+  end
+
+  defp default_idle_timeout do
+    Application.get_env(:omni_agent, __MODULE__, [])
+    |> Keyword.get(:idle_timeout, @default_idle_timeout)
   end
 
   # Pick the id that will go into the Registry, and ensure opts name it

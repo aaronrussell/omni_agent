@@ -1,6 +1,6 @@
 # Durable Agents
 
-**Status:** Phases 1 and 2 complete; Phases 3–4 planned
+**Status:** Phases 1, 2, and 3 complete; Phase 4 planned
 **Supersedes:** `context/session.md` (Session-wrapper design, superseded)
 **Direction:** `Omni.Agent` absorbs durability / persistence / tree concerns directly — no separate `Omni.Session` process.
 
@@ -672,16 +672,15 @@ Build and test incrementally. Each phase is shippable.
 - **`:continue` response excludes the continuation user message.** Preserved from the pre-tree behaviour. The `:continue` response is the turn slice "so far" (user prompt → assistant of the completed step). The continuation user message is pushed after, and the final `:stop` response carries the full extended slice including it. Semantically consistent with step/turn boundaries: a continuation without a following assistant would be a partial step, not a turn.
 - **Node id algorithm kept as `size + 1`.** Briefly considered a separate `:next_id` counter for robustness against manual node deletion, but under the append-only invariant `size + 1` is strictly safer (no risk of the counter drifting from the node map). Integer ids are cheap in events, in the `new_node_ids` persistence hint, and readable in test output; random ids (ULID/UUID) deferred until cross-agent tree merging becomes a real need.
 
-### Phase 3 — Persistence + Manager
+### Phase 3 — Persistence + Manager ✅ Completed
 
-- `Omni.Agent.Store` behaviour + `Omni.Agent.Store.FileSystem` (atomic-rename meta, skip-any tolerant tree load)
+- `Omni.Agent.Store` pure behaviour module + `Omni.Agent.Store.FileSystem` adapter (atomic-rename meta, skip-any tolerant tree load)
 - `Omni.Agent.generate_id/0` framework helper (crypto-random URL-safe string); callers in Manager and Server init
-- `Omni.Agent.Manager` (opt-in `Supervisor` wrapping a DynamicSupervisor + Registry under registered name atoms)
+- `Omni.Agent.Manager` opt-in `Supervisor` wrapping an inner `DynamicSupervisor` + `Registry` under registered name atoms
 - `Omni.Agent.Manager.start_agent/1,2`, `stop_agent/1`, `list_running/0`, `lookup/1`
-- Start semantics: per-field category policy, four init outcomes, model fallback
-- Write-through: `save_tree` on append, `save_state` on config change
-- `Store` as a pure behaviour module (no public wrappers); callers use the adapter module (e.g. `Store.FileSystem.list/1`, `Store.FileSystem.delete/2`) directly
-- Idle termination timer (supervised agents only; default 10 min, app-configurable)
+- Start semantics: per-field category policy on load, four init modes (ephemeral, supervised-ephemeral, new, load), lenient model resolution
+- Write-through: `save_tree` on every tree append (with `:new_node_ids` hint for incremental append), `save_state` on every `set_state`; errors broadcast via new `:store` event; writes never crash the agent
+- Idle termination timer (supervised agents only; default 10 min, app-configurable; persistence flushed on timer fire)
 - DETS adapter — deferred (not shipped this phase)
 
 **Sub-deliverable order:**
@@ -698,15 +697,28 @@ Build and test incrementally. Each phase is shippable.
 - Incremental tree save: `save_tree` receives `new_node_ids` hint for appends
 - Atomic-rename for `meta.json` survives an interrupted write
 - Skip-any tolerant load drops a truncated trailing line from `tree.jsonl`
-- State conflict: `Manager.start_agent(load: "x", tree: t)` with data present errors
-- Overridable fields: `Manager.start_agent(load: "x", model: m2)` with persisted m1 uses m2; persists m2 on first save
-- Model fallback: unresolvable persisted ref + caller `:model` opt → caller wins
+- State conflict: `start_link(load: "x", tree: t)` returns `{:invalid_load_opts, [:tree]}`
+- Overridable fields: `start_link(load: "x", model: m2)` with persisted m1 uses m2; persists m2 on first save
+- Model fallback: unresolvable persisted ref + caller `:model` opt → caller wins; both fail → `:model_not_found`
 - Registry conflict: second `Manager.start_agent(load: "x")` returns `{:already_started, pid}`
 - `list_running/0` reflects supervised agents; `lookup/1` returns pid or nil
-- `Store.delete` terminates live agent + wipes storage
-- No-op (no `:store`): `start_link`/`save_state` work without persistence
+- Two-call stop+delete pattern works (`Manager.stop_agent(id)` then `adapter.delete(id, [])`)
+- No-op (no `:store`): `start_link`/`set_state` work without persistence
 - Save errors: adapter returns `{:error, _}`; agent doesn't crash; `:store` event fires; `set_state` still returns `:ok`
-- Idle timer: fires only when no subscribers AND no turn streaming
+- Idle timer: fires only when idle AND no subscribers AND no step/executor task; race-safe when a prompt crosses a firing timer
+
+**Notes / refinements during implementation:**
+
+- **`Omni.Agent.Store` became a pure behaviour module.** The plan originally specced a thin public API (`Store.list/1`, `Store.delete/2`) that dispatched to an adapter passed via `:store` opt. This was rejected as pure indirection — when the caller already holds the adapter module, a wrapper that takes the same module back as an option adds no value over calling the adapter directly. Cross-cutting concerns previously on `Store.delete` (stopping a live supervised agent before wiping data) are now the caller's responsibility as a two-call pattern: `Manager.stop_agent(id)` + `adapter.delete(id, [])`. A single-call "stop and delete" API on `Manager` was considered and rejected for the same module-dispatch reason.
+- **`generate_id/0` moved from Store callback to `Omni.Agent.generate_id/0`.** The id is a framework concern — a Registry key and a storage key — not an adapter-specific format. Keeping it on `Store` also blocked supervised-ephemeral agents (no store to consult). `Omni.Agent.generate_id/0` is a one-liner; Manager calls it when `:id`/`:new`/`:load` don't supply one. Adapters receive whatever id string they're handed and don't dictate format.
+- **Supervised-ephemeral is a first-class mode.** The plan implicitly coupled `Manager` to persistence. Identity and persistence are orthogonal — `Manager` needs an id for registration; `:store` adds write-through. `Manager.start_agent(id: "x")` (supervised, ephemeral — useful for LiveView-session-style agents) is valid alongside the persistent modes.
+- **`:id` is ephemeral-only in the public API.** Passing `:id` alongside `:store` / `:new` / `:load` is rejected as `{:error, {:invalid_opts, [:id]}}`. Persistent agents specify identity via `:new` or `:load`.
+- **Model resolution order: caller-first, persisted-fallback.** The plan described persisted-first with caller as fallback; implementation does the opposite — caller's `:model` is tried first (matching overridable-field "caller wins when present" semantics) and the persisted ref is the fallback if caller fails or is absent. Both shapes cover the "app removed a model between sessions" lenient-load case; the chosen order keeps the overridable-field semantics uniform.
+- **`Manager.stop_agent/1` tolerates the Registry cleanup race.** After `DynamicSupervisor.terminate_child/2` returns, the pid is dead, but `Registry`'s own DOWN handler runs asynchronously. A second `stop_agent(id)` call can see a stale pid and get `{:error, :not_found}` from `terminate_child/2`. We treat that as idempotent success so callers see a clean `:ok`.
+- **Init-time save errors are swallowed silently.** `save_initial_state/2` runs in `init/1` before any subscribers exist, so the `:store` event has nowhere to go. Write-through from SD4 onwards broadcasts errors properly; init-time failures rely on whatever logging the adapter does.
+- **Idle timer is race-safe via ref + condition re-check.** The `{:idle_timeout, ref}` message carries the ref of the timer that fired; on receive, the handler verifies it matches `server.idle_timer_ref` (rejecting stale messages from canceled timers) and re-evaluates the arming conditions (rejecting messages that crossed in flight with a new prompt or subscribe).
+- **Manager-supervised agents don't inherit `$callers` from the test process.** Relevant only in tests: agents spawned through `DynamicSupervisor.start_child/2` don't have the test pid in their `$callers` chain, so `Req.Test.stub/2` registered against the test pid isn't reachable from the step task. Tests that prompt a Manager-started agent explicitly `Req.Test.allow(stub_name, self(), agent_pid)` after starting.
+- **Child spec `id` field quirk.** `DynamicSupervisor` validates that a child spec map has `:id` but ignores the value (it assigns internal refs). We set it to `{Omni.Agent, id}` purely for human readability when inspecting specs.
 
 ### Phase 4 — Config events, tool helpers, lenient model resolution refinements
 
@@ -769,9 +781,9 @@ lib/omni/
     ├── tree.ex                       # Branching message tree (ported)
     ├── manager.ex                    # Opt-in Supervisor: wraps inner DynamicSupervisor + Registry,
     │                                 #   exposes start_agent / stop_agent / list_running / lookup
-    ├── store.ex                      # Store behaviour + public API
+    ├── store.ex                      # Store behaviour (callbacks + shared types only)
     └── store/
-        └── file_system.ex            # JSON/JSONL adapter (ported)
+        └── file_system.ex            # JSON/JSONL adapter
 ```
 
 The inner DynamicSupervisor and Registry are started by `Manager`'s `init/1` under registered name atoms (e.g. `Omni.Agent.DynamicSupervisor`, `Omni.Agent.Registry`). They are not separate public modules.
