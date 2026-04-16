@@ -12,6 +12,8 @@ end
 
 {:ok, pid} = Omni.Agent.start_link(MyAgent, model: {:anthropic, "claude-haiku-4-5"})
 
+{:ok, _snapshot} = Omni.Agent.subscribe(pid)
+
 schema = Omni.Schema.object(%{
   name: Omni.Schema.string(description: "Full character name"),
   role: Omni.Schema.string(description: "Role or profession"),

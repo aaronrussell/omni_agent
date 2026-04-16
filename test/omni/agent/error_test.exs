@@ -12,13 +12,15 @@ defmodule Omni.Agent.ErrorTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
+      {:ok, _} = Agent.subscribe(agent)
+
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
       assert {:error, _reason} = List.last(events)
       # Agent goes to :idle (not :error) — pending messages discarded
       assert Agent.get_state(agent, :status) == :idle
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :tree) == []
     end
 
     test "custom {:retry, state} retries and succeeds on second attempt" do
@@ -30,6 +32,8 @@ defmodule Omni.Agent.ErrorTest do
           model: model(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -47,6 +51,8 @@ defmodule Omni.Agent.ErrorTest do
           model: model(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -76,9 +82,10 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         CrashRetryAgent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       assert_receive :step_started, 2000
@@ -108,10 +115,11 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           tools: [hanging_tool],
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "What's the weather?")
 
@@ -141,9 +149,10 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       assert_receive :step_started, 2000
@@ -165,9 +174,10 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -175,7 +185,7 @@ defmodule Omni.Agent.ErrorTest do
 
       # Agent is idle, context messages are empty (user msg was discarded)
       assert Agent.get_state(agent, :status) == :idle
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :tree) == []
     end
 
     test "can prompt again after error" do
@@ -185,9 +195,10 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -202,7 +213,7 @@ defmodule Omni.Agent.ErrorTest do
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Only the successful turn's messages
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      assert length(Agent.get_state(agent, :tree)) == 2
     end
   end
 
@@ -214,9 +225,10 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         ErrorRetryAgent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -228,7 +240,7 @@ defmodule Omni.Agent.ErrorTest do
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
 
       # Context should have committed messages from the successful turn
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :tree)
       assert length(messages) == 2
 
       [user_msg, assistant_msg] = messages

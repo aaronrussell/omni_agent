@@ -109,6 +109,8 @@ defmodule Omni.Agent.AgentCase do
         model
       end
 
+      # Starts an agent and subscribes the calling (test) process to its events.
+      # Returns `{:ok, pid}` for drop-in compatibility with existing tests.
       defp start_agent(opts \\ []) do
         stub_name = opts[:stub_name] || unique_stub_name()
 
@@ -120,10 +122,17 @@ defmodule Omni.Agent.AgentCase do
         agent_opts =
           Keyword.merge(
             [model: model(), opts: [api_key: "test-key", plug: {Req.Test, stub_name}]],
-            Keyword.drop(opts, [:stub_name, :fixture, :fixtures])
+            Keyword.drop(opts, [:stub_name, :fixture, :fixtures, :subscribe])
           )
 
-        Agent.start_link(agent_opts)
+        case Agent.start_link(agent_opts) do
+          {:ok, pid} = result ->
+            if Keyword.get(opts, :subscribe, true), do: {:ok, _} = Agent.subscribe(pid)
+            result
+
+          other ->
+            other
+        end
       end
 
       defp start_agent_with_module(module, opts) do
@@ -137,10 +146,17 @@ defmodule Omni.Agent.AgentCase do
         module_opts =
           Keyword.merge(
             [model: model(), opts: [api_key: "test-key", plug: {Req.Test, stub_name}]],
-            Keyword.drop(opts, [:stub_name, :fixture, :fixtures])
+            Keyword.drop(opts, [:stub_name, :fixture, :fixtures, :subscribe])
           )
 
-        module.start_link(module_opts)
+        case module.start_link(module_opts) do
+          {:ok, pid} = result ->
+            if Keyword.get(opts, :subscribe, true), do: {:ok, _} = Agent.subscribe(pid)
+            result
+
+          other ->
+            other
+        end
       end
 
       defp unique_stub_name do

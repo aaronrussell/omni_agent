@@ -16,8 +16,8 @@ defmodule Omni.Agent.Server do
   use GenServer
 
   alias Omni.{Context, Message, Model, Response, Tool, Usage}
-  alias Omni.Agent.State
-  alias Omni.Content.{ToolResult, ToolUse}
+  alias Omni.Agent.{Snapshot, State}
+  alias Omni.Content.{Text, Thinking, ToolResult, ToolUse}
 
   defstruct [
     # Public state (passed to callbacks)
@@ -25,8 +25,11 @@ defmodule Omni.Agent.Server do
 
     # Configuration (set at init, stable across turns)
     :module,
-    :listener,
     :tool_timeout,
+
+    # Subscribers: pids that receive agent events, monitored for DOWN cleanup.
+    subscribers: MapSet.new(),
+    monitors: %{},
 
     # Turn lifecycle (set when a prompt starts, cleared by reset_turn)
     # pending_messages: messages accumulated during the current turn
@@ -34,11 +37,14 @@ defmodule Omni.Agent.Server do
     # prompt_opts: merged opts for the current turn (state.opts + call-site opts)
     # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
     #   while running/paused
+    # partial_message: content blocks streamed so far for the in-flight
+    #   assistant message; nil between steps and when not streaming
     pending_messages: [],
     pending_usage: %Usage{},
     prompt_opts: [],
     next_prompt: nil,
     last_response: nil,
+    partial_message: nil,
 
     # Process tracking
     step_task: nil,
@@ -50,11 +56,11 @@ defmodule Omni.Agent.Server do
     remaining_uses: [],
     rejected_results: [],
     provided_results: [],
-    paused_use: nil,
-    paused_reason: nil
+    paused_info: nil
   ]
 
-  @settable_fields [:model, :context, :opts, :meta]
+  @settable_fields [:model, :system, :tools, :opts, :meta]
+  @rejected_init_opts [:listener, :context]
 
   def start_link(init_arg, gs_opts) do
     # Capture $callers so the chain reaches back to whoever started the agent.
@@ -72,11 +78,15 @@ defmodule Omni.Agent.Server do
     Process.put(:"$callers", callers)
     Process.flag(:trap_exit, true)
 
-    with {:ok, model} <- resolve_model(opts[:model]),
+    with :ok <- validate_init_opts(opts),
+         {:ok, model} <- resolve_model(opts[:model]),
          {:ok, private} <- call_init(module, opts) do
       agent_state = %State{
+        id: opts[:id],
         model: model,
-        context: build_init_context(opts),
+        system: opts[:system],
+        tools: opts[:tools] || [],
+        tree: opts[:tree] || opts[:messages] || [],
         opts: Keyword.get(opts, :opts, []),
         meta: opts[:meta] || %{},
         private: private
@@ -85,7 +95,6 @@ defmodule Omni.Agent.Server do
       server = %__MODULE__{
         state: agent_state,
         module: module,
-        listener: opts[:listener],
         tool_timeout: Keyword.get(opts, :tool_timeout, 5_000)
       }
 
@@ -95,54 +104,46 @@ defmodule Omni.Agent.Server do
     end
   end
 
+  defp validate_init_opts(opts) do
+    case Enum.find(@rejected_init_opts, &Keyword.has_key?(opts, &1)) do
+      nil -> :ok
+      key -> {:error, {:invalid_opt, key}}
+    end
+  end
+
   defp resolve_model({provider_id, model_id}), do: Model.get(provider_id, model_id)
   defp resolve_model(%Model{} = model), do: {:ok, model}
   defp resolve_model(nil), do: {:error, :missing_model}
-
-  defp build_init_context(opts) do
-    case opts[:context] do
-      %Context{} = ctx ->
-        ctx
-
-      nil ->
-        %Context{
-          system: opts[:system],
-          messages: opts[:messages] || [],
-          tools: opts[:tools] || []
-        }
-    end
-  end
 
   # -- Calls --
 
   @impl GenServer
   def handle_call(
         {:prompt, content, opts},
-        {from_pid, _},
+        _from,
         %__MODULE__{state: %{status: :idle}} = server
       ) do
-    server = if server.listener == nil, do: %{server | listener: from_pid}, else: server
     server = start_turn(content, opts, server)
     {:reply, :ok, server}
   end
 
   def handle_call(
-        {:prompt, content, opts},
+        {:prompt, _content, _opts} = call,
         _from,
         %__MODULE__{state: %{status: status}} = server
       )
       when status in [:running, :paused] do
+    {:prompt, content, opts} = call
     {:reply, :ok, %{server | next_prompt: {content, opts}}}
   end
 
   def handle_call({:resume, decision}, _from, %__MODULE__{state: %{status: :paused}} = server) do
-    tool_use = server.paused_use
+    {_reason, tool_use} = server.paused_info
 
     server = %{
       server
       | state: %{server.state | status: :running},
-        paused_use: nil,
-        paused_reason: nil
+        paused_info: nil
     }
 
     server =
@@ -183,8 +184,41 @@ defmodule Omni.Agent.Server do
     {:reply, {:error, :idle}, server}
   end
 
-  def handle_call({:listen, pid}, _from, %__MODULE__{state: %{status: :idle}} = server) do
-    {:reply, :ok, %{server | listener: pid}}
+  # -- Subscribe / Unsubscribe --
+
+  def handle_call({:subscribe, pid}, _from, server) do
+    if MapSet.member?(server.subscribers, pid) do
+      {:reply, {:ok, build_snapshot(server)}, server}
+    else
+      ref = Process.monitor(pid)
+      snapshot = build_snapshot(server)
+
+      server = %{
+        server
+        | subscribers: MapSet.put(server.subscribers, pid),
+          monitors: Map.put(server.monitors, ref, pid)
+      }
+
+      {:reply, {:ok, snapshot}, server}
+    end
+  end
+
+  def handle_call({:unsubscribe, pid}, _from, server) do
+    case find_monitor_ref(server.monitors, pid) do
+      nil ->
+        {:reply, :ok, server}
+
+      ref ->
+        Process.demonitor(ref, [:flush])
+
+        server = %{
+          server
+          | subscribers: MapSet.delete(server.subscribers, pid),
+            monitors: Map.delete(server.monitors, ref)
+        }
+
+        {:reply, :ok, server}
+    end
   end
 
   # -- set_state/2 --
@@ -231,7 +265,6 @@ defmodule Omni.Agent.Server do
   end
 
   # Catch-all for mutating ops while running or paused
-  def handle_call({:listen, _}, _from, server), do: {:reply, {:error, :running}, server}
   def handle_call({:set_state, _}, _from, server), do: {:reply, {:error, :running}, server}
   def handle_call({:set_state, _, _}, _from, server), do: {:reply, {:error, :running}, server}
 
@@ -244,6 +277,7 @@ defmodule Omni.Agent.Server do
 
   @impl GenServer
   def handle_info({ref, {:event, type, event_map}}, %{step_task: {_, ref}} = server) do
+    server = accumulate_partial(server, type, event_map)
     notify(server, type, event_map)
     {:noreply, server}
   end
@@ -300,6 +334,19 @@ defmodule Omni.Agent.Server do
     {:noreply, server}
   end
 
+  # -- Info (subscriber DOWN) --
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, server) do
+    case Map.pop(server.monitors, ref) do
+      {nil, _} ->
+        {:noreply, server}
+
+      {pid, monitors} ->
+        {:noreply,
+         %{server | subscribers: MapSet.delete(server.subscribers, pid), monitors: monitors}}
+    end
+  end
+
   def handle_info(_msg, server) do
     {:noreply, server}
   end
@@ -317,13 +364,15 @@ defmodule Omni.Agent.Server do
     user_message = Message.new(role: :user, content: content)
     prompt_opts = Keyword.merge(server.state.opts, opts)
 
-    %{
+    server = %{
       server
       | state: %{server.state | status: :running, step: 0},
         pending_messages: [user_message],
         prompt_opts: prompt_opts
     }
-    |> evaluate_head()
+
+    notify(server, :message, user_message)
+    evaluate_head(server)
   end
 
   # -- evaluate_head: unified state machine --
@@ -367,7 +416,11 @@ defmodule Omni.Agent.Server do
   end
 
   defp build_context(server) do
-    %{server.state.context | messages: server.state.context.messages ++ server.pending_messages}
+    %Context{
+      system: server.state.system,
+      tools: server.state.tools,
+      messages: server.state.tree ++ server.pending_messages
+    }
   end
 
   # -- Step completion --
@@ -380,9 +433,11 @@ defmodule Omni.Agent.Server do
       | pending_messages: server.pending_messages ++ [response.message],
         step_task: nil,
         last_response: response,
-        pending_usage: pending_usage
+        pending_usage: pending_usage,
+        partial_message: nil
     }
 
+    notify(server, :message, response.message)
     notify(server, :step, response)
     evaluate_head(server)
   end
@@ -390,7 +445,7 @@ defmodule Omni.Agent.Server do
   # -- Tool decision phase --
 
   defp handle_tool_decision_phase(tool_uses, server) do
-    tool_map = build_tool_map(server.state.context.tools)
+    tool_map = build_tool_map(server.state.tools)
 
     %{server | tool_map: tool_map, remaining_uses: tool_uses, approved_uses: []}
     |> process_next_tool_decision()
@@ -447,8 +502,7 @@ defmodule Omni.Agent.Server do
         %{
           server
           | state: %{new_state | status: :paused},
-            paused_use: tool_use,
-            paused_reason: reason
+            paused_info: {reason, tool_use}
         }
         |> tap(&notify(&1, :pause, {reason, tool_use}))
     end
@@ -477,7 +531,7 @@ defmodule Omni.Agent.Server do
 
     server = %{server | executor_task: nil, rejected_results: [], provided_results: []}
 
-    # Call handle_tool_result for each and notify listener
+    # Call handle_tool_result for each and notify subscribers
     {final_results, server} =
       Enum.map_reduce(all_results, server, fn result, srv ->
         case call_handle_tool_result(srv.module, result, srv.state) do
@@ -493,6 +547,7 @@ defmodule Omni.Agent.Server do
     # Build user message with all tool results, append to pending
     user_message = Message.new(role: :user, content: final_results)
     server = %{server | pending_messages: server.pending_messages ++ [user_message]}
+    notify(server, :message, user_message)
 
     evaluate_head(server)
   end
@@ -540,14 +595,14 @@ defmodule Omni.Agent.Server do
 
     user_message = Message.new(role: :user, content: prompt)
     server = %{server | pending_messages: server.pending_messages ++ [user_message]}
+    notify(server, :message, user_message)
 
     evaluate_head(server)
   end
 
   defp complete_turn(_response, server) do
-    context = server.state.context
-    new_context = %{context | messages: context.messages ++ server.pending_messages}
-    server = %{server | state: %{server.state | context: new_context}}
+    new_tree = server.state.tree ++ server.pending_messages
+    server = %{server | state: %{server.state | tree: new_tree}}
 
     response = build_turn_response(server)
     server = reset_turn(server)
@@ -569,6 +624,10 @@ defmodule Omni.Agent.Server do
 
   defp kill_task(nil), do: :ok
   defp kill_task({pid, _ref}), do: Process.exit(pid, :kill)
+
+  defp find_monitor_ref(monitors, pid) do
+    Enum.find_value(monitors, fn {ref, p} -> if p == pid, do: ref end)
+  end
 
   # -- Response builders --
 
@@ -601,6 +660,91 @@ defmodule Omni.Agent.Server do
     messages
     |> Enum.reverse()
     |> Enum.find(&(&1.role == :assistant))
+  end
+
+  # -- Snapshot --
+
+  defp build_snapshot(server) do
+    s = server.state
+
+    %Snapshot{
+      id: s.id,
+      model: s.model,
+      system: s.system,
+      tools: s.tools,
+      tree: s.tree,
+      opts: s.opts,
+      meta: s.meta,
+      status: s.status,
+      step: s.step,
+      partial_message: server.partial_message,
+      paused: server.paused_info
+    }
+  end
+
+  # -- Partial message accumulation --
+
+  defp accumulate_partial(server, :text_start, %{index: idx}) do
+    put_partial_block(server, idx, %Text{text: ""})
+  end
+
+  defp accumulate_partial(server, :text_delta, %{index: idx, delta: d}) do
+    update_partial_block(server, idx, fn %Text{text: t} = b -> %{b | text: t <> d} end)
+  end
+
+  defp accumulate_partial(server, :text_end, %{index: idx, content: content}) do
+    put_partial_block(server, idx, content)
+  end
+
+  defp accumulate_partial(server, :thinking_start, %{index: idx}) do
+    put_partial_block(server, idx, %Thinking{text: ""})
+  end
+
+  defp accumulate_partial(server, :thinking_delta, %{index: idx, delta: d}) do
+    update_partial_block(server, idx, fn %Thinking{text: t} = b ->
+      %{b | text: (t || "") <> d}
+    end)
+  end
+
+  defp accumulate_partial(server, :thinking_end, %{index: idx, content: content}) do
+    put_partial_block(server, idx, content)
+  end
+
+  defp accumulate_partial(server, :tool_use_start, %{index: idx, id: id, name: name}) do
+    put_partial_block(server, idx, %ToolUse{id: id, name: name, input: %{}})
+  end
+
+  defp accumulate_partial(server, :tool_use_delta, _event_map) do
+    # Tool-use input arrives as incrementally-built JSON text that we can't
+    # parse reliably until the block ends. The placeholder ToolUse struct
+    # from :tool_use_start stays in place until :tool_use_end replaces it.
+    server
+  end
+
+  defp accumulate_partial(server, :tool_use_end, %{index: idx, content: content}) do
+    put_partial_block(server, idx, content)
+  end
+
+  defp accumulate_partial(server, _type, _event_map), do: server
+
+  defp put_partial_block(server, idx, block) do
+    list = server.partial_message || []
+    %{server | partial_message: place_at(list, idx, block)}
+  end
+
+  defp update_partial_block(server, idx, fun) do
+    case server.partial_message do
+      nil -> server
+      list -> %{server | partial_message: List.update_at(list, idx, fun)}
+    end
+  end
+
+  defp place_at(list, idx, block) do
+    cond do
+      idx < length(list) -> List.replace_at(list, idx, block)
+      idx == length(list) -> list ++ [block]
+      true -> list ++ List.duplicate(nil, idx - length(list)) ++ [block]
+    end
   end
 
   # -- set_state --
@@ -665,8 +809,8 @@ defmodule Omni.Agent.Server do
         tool_map: nil,
         approved_uses: [],
         remaining_uses: [],
-        paused_use: nil,
-        paused_reason: nil
+        partial_message: nil,
+        paused_info: nil
     }
   end
 
@@ -683,8 +827,11 @@ defmodule Omni.Agent.Server do
     Map.new(tools, fn tool -> {tool.name, tool} end)
   end
 
-  defp notify(%{listener: nil}, _type, _data), do: :ok
-  defp notify(%{listener: pid}, type, data), do: send(pid, {:agent, self(), type, data})
+  defp notify(server, type, data) do
+    msg = {:agent, self(), type, data}
+    Enum.each(server.subscribers, &send(&1, msg))
+    :ok
+  end
 
   # -- Callback dispatch --
 

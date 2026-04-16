@@ -6,8 +6,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixture: @tool_use_fixture,
-          listener: self()
+          fixture: @tool_use_fixture
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -28,8 +27,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -49,8 +47,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -76,8 +73,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixture: @tool_use_fixture,
-          listener: self()
+          fixture: @tool_use_fixture
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -89,7 +85,7 @@ defmodule Omni.Agent.PauseResumeTest do
       assert {:cancelled, %Response{stop_reason: :cancelled}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Cancel discards pending messages, context stays empty
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :tree) == []
     end
 
     test "multiple tools: pause on first, approve, remaining processed normally" do
@@ -98,8 +94,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -118,8 +113,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")

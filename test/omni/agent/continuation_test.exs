@@ -30,7 +30,7 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       _events = collect_events(agent)
 
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :tree)
       # Initial user + assistant, then 2 more (user continue + assistant) per extra turn
       # = 2 + 2 + 2 = 6 messages
       assert length(messages) == 6
@@ -70,7 +70,7 @@ defmodule Omni.Agent.ContinuationTest do
       assert Agent.get_state(agent, :status) == :idle
 
       # Context should be committed (includes tool result messages)
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :tree)
       assert length(messages) > 0
     end
   end
@@ -95,8 +95,7 @@ defmodule Omni.Agent.ContinuationTest do
     test "{:continue} event carries intermediate response with messages" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
-          fixtures: [@text_fixture, @text_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@text_fixture, @text_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Start")
@@ -115,10 +114,7 @@ defmodule Omni.Agent.ContinuationTest do
   describe "per-prompt opts" do
     test "per-prompt opts are ephemeral and don't persist to next turn" do
       {:ok, agent} =
-        start_agent(
-          fixtures: [@text_fixture, @text_fixture],
-          listener: self()
-        )
+        start_agent(fixtures: [@text_fixture, @text_fixture])
 
       # First prompt with max_steps override
       :ok = Agent.prompt(agent, "First", max_steps: 1)

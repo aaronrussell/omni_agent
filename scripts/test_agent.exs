@@ -20,6 +20,7 @@ weather_tool =
   tools: [weather_tool]
 )
 
+{:ok, _snapshot} = Omni.Agent.subscribe(pid)
 :ok = Omni.Agent.prompt(pid, "What is the weather like in London?")
 
 defmodule Loop do

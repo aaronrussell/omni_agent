@@ -12,6 +12,8 @@ defmodule Omni.Agent.SteeringTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
+      {:ok, _} = Agent.subscribe(agent)
+
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
       assert :ok = Agent.prompt(agent, "Follow up!")
@@ -30,6 +32,8 @@ defmodule Omni.Agent.SteeringTest do
           model: model(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
@@ -57,9 +61,10 @@ defmodule Omni.Agent.SteeringTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
@@ -80,9 +85,10 @@ defmodule Omni.Agent.SteeringTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
@@ -95,8 +101,8 @@ defmodule Omni.Agent.SteeringTest do
       assert length(continue_events) == 1
       assert {:stop, %Response{}} = List.last(events)
 
-      # Context should have messages from two turns
-      messages = Agent.get_state(agent, :context).messages
+      # Tree should have messages from two turns
+      messages = Agent.get_state(agent, :tree)
       # First user + assistant + second user + assistant = 4
       assert length(messages) == 4
     end
@@ -109,9 +115,10 @@ defmodule Omni.Agent.SteeringTest do
         PauseAgent.start_link(
           model: model(),
           tools: [tool_with_handler()],
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Use the tool")
       events = collect_events(agent)
@@ -141,6 +148,8 @@ defmodule Omni.Agent.SteeringTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
+      {:ok, _} = Agent.subscribe(agent)
+
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
       :ok = Agent.cancel(agent)
@@ -148,8 +157,8 @@ defmodule Omni.Agent.SteeringTest do
       events = collect_events(agent, 2000)
       assert {:cancelled, %Response{stop_reason: :cancelled}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
-      # Cancel discards pending messages, context stays empty
-      assert Agent.get_state(agent, :context).messages == []
+      # Cancel discards pending messages, tree stays empty
+      assert Agent.get_state(agent, :tree) == []
     end
 
     test "cancel while idle returns error" do
@@ -164,9 +173,10 @@ defmodule Omni.Agent.SteeringTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
@@ -203,9 +213,10 @@ defmodule Omni.Agent.SteeringTest do
       {:ok, agent} =
         ContinueAgent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Start")
       Process.sleep(50)
@@ -221,8 +232,8 @@ defmodule Omni.Agent.SteeringTest do
       assert length(continue_events) >= 1
       assert {:stop, %Response{}} = List.last(events)
 
-      # Verify the staged prompt made it into context
-      messages = Agent.get_state(agent, :context).messages
+      # Verify the staged prompt made it into the tree
+      messages = Agent.get_state(agent, :tree)
       user_contents = for %{role: :user} = msg <- messages, do: msg
       # Should have "Start" and "Redirect!" as user messages (not "Continue.")
       assert length(user_contents) >= 2
@@ -237,9 +248,10 @@ defmodule Omni.Agent.SteeringTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
+
+      {:ok, _} = Agent.subscribe(agent)
 
       :ok = Agent.prompt(agent, "Hello!", max_steps: 1)
       Process.sleep(50)
@@ -251,7 +263,7 @@ defmodule Omni.Agent.SteeringTest do
       # Should complete with :stop (max_steps forces stop, staged prompt ignored)
       assert {:stop, %Response{}} = List.last(events)
       # Only 1 turn worth of messages (user + assistant = 2)
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      assert length(Agent.get_state(agent, :tree)) == 2
     end
   end
 end

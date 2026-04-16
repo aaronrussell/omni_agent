@@ -13,29 +13,6 @@ defmodule Omni.Agent.PromptTest do
     end
   end
 
-  describe "auto listener" do
-    test "first prompt caller becomes listener automatically" do
-      {:ok, agent} = start_agent()
-      :ok = Agent.prompt(agent, "Hello!")
-
-      events = collect_events(agent)
-      assert {:stop, %Response{}} = List.last(events)
-    end
-  end
-
-  describe "explicit listener" do
-    test "events go to the listener process" do
-      {:ok, agent} = start_agent()
-
-      test_pid = self()
-      :ok = Agent.listen(agent, test_pid)
-      :ok = Agent.prompt(agent, "Hello!")
-
-      events = collect_events(agent)
-      assert {:stop, %Response{}} = List.last(events)
-    end
-  end
-
   describe "turn events" do
     test "turn event has response with correct data" do
       {:ok, agent} = start_agent()
@@ -59,8 +36,8 @@ defmodule Omni.Agent.PromptTest do
 
       assert {:stop, %Response{}} = List.last(events)
 
-      # After two turns, context should have 4 messages
-      assert length(Agent.get_state(agent, :context).messages) == 4
+      # After two turns, tree should have 4 messages
+      assert length(Agent.get_state(agent, :tree)) == 4
     end
   end
 
@@ -82,7 +59,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "First message")
       _events = collect_events(agent)
 
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :tree)
       assert length(messages) == 2
 
       stub_name = unique_stub_name()
@@ -94,14 +71,16 @@ defmodule Omni.Agent.PromptTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
+      {:ok, _} = Agent.subscribe(agent2)
+
       :ok = Agent.prompt(agent2, "First")
       _events = collect_events(agent2)
-      assert length(Agent.get_state(agent2, :context).messages) == 2
+      assert length(Agent.get_state(agent2, :tree)) == 2
 
       stub_fixture(stub_name, @text_fixture)
       :ok = Agent.prompt(agent2, "Second")
       _events = collect_events(agent2)
-      assert length(Agent.get_state(agent2, :context).messages) == 4
+      assert length(Agent.get_state(agent2, :tree)) == 4
     end
   end
 
@@ -114,7 +93,7 @@ defmodule Omni.Agent.PromptTest do
       events = collect_events(agent)
 
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :tree)
       assert length(messages) == 2
 
       [user_msg | _] = messages
@@ -125,7 +104,7 @@ defmodule Omni.Agent.PromptTest do
 
   describe "turn response content" do
     test "contains expected user and assistant messages" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -141,7 +120,7 @@ defmodule Omni.Agent.PromptTest do
 
   describe "streaming events" do
     test "includes text_start and text_end events" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -152,12 +131,8 @@ defmodule Omni.Agent.PromptTest do
       assert :text_delta in event_types
     end
 
-    test "thinking events pass through to listener" do
-      {:ok, agent} =
-        start_agent(
-          fixture: @thinking_fixture,
-          listener: self()
-        )
+    test "thinking events pass through to subscriber" do
+      {:ok, agent} = start_agent(fixture: @thinking_fixture)
 
       :ok = Agent.prompt(agent, "Think about this")
       events = collect_events(agent)

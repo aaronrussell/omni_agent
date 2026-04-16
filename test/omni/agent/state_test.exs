@@ -10,13 +10,18 @@ defmodule Omni.Agent.StateTest do
       assert state.status == :idle
       assert state.private == %{}
       assert state.meta == %{}
+      assert state.tree == []
+      assert state.tools == []
+      assert state.system == nil
+      assert state.id == nil
     end
 
     test "returns individual fields by key" do
       {:ok, agent} = start_agent()
       assert %Omni.Model{id: "claude-haiku-4-5"} = Agent.get_state(agent, :model)
-      assert %Context{} = Agent.get_state(agent, :context)
-      assert Agent.get_state(agent, :context).tools == []
+      assert Agent.get_state(agent, :tree) == []
+      assert Agent.get_state(agent, :tools) == []
+      assert Agent.get_state(agent, :system) == nil
       assert Agent.get_state(agent, :status) == :idle
       assert Agent.get_state(agent, :private) == %{}
     end
@@ -28,13 +33,21 @@ defmodule Omni.Agent.StateTest do
   end
 
   describe "set_state/2" do
-    test "replaces context" do
+    test "replaces system" do
       {:ok, agent} = start_agent()
-      assert Agent.get_state(agent, :context).system == nil
+      assert Agent.get_state(agent, :system) == nil
 
-      ctx = Agent.get_state(agent, :context)
-      :ok = Agent.set_state(agent, context: %{ctx | system: "Be helpful."})
-      assert Agent.get_state(agent, :context).system == "Be helpful."
+      :ok = Agent.set_state(agent, system: "Be helpful.")
+      assert Agent.get_state(agent, :system) == "Be helpful."
+    end
+
+    test "replaces tools" do
+      tool = tool_with_handler()
+      {:ok, agent} = start_agent()
+      assert Agent.get_state(agent, :tools) == []
+
+      :ok = Agent.set_state(agent, tools: [tool])
+      assert [^tool] = Agent.get_state(agent, :tools)
     end
 
     test "replaces opts (full replacement, not merge)" do
@@ -62,20 +75,19 @@ defmodule Omni.Agent.StateTest do
       assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, status: :running)
     end
 
-    test "rejects old keys that are no longer settable" do
+    test "rejects legacy :context key" do
       {:ok, agent} = start_agent()
-      assert {:error, {:invalid_key, :system}} = Agent.set_state(agent, system: "New")
-      assert {:error, {:invalid_key, :tools}} = Agent.set_state(agent, tools: [])
+      assert {:error, {:invalid_key, :context}} = Agent.set_state(agent, context: %Context{})
     end
 
     test "atomic — bad model rejects all changes" do
       {:ok, agent} = start_agent()
-      original_ctx = Agent.get_state(agent, :context)
+      original_system = Agent.get_state(agent, :system)
 
-      result = Agent.set_state(agent, model: {:anthropic, "nonexistent"}, context: %Context{})
+      result = Agent.set_state(agent, model: {:anthropic, "nonexistent"}, system: "Changed")
       assert {:error, {:model_not_found, _}} = result
-      # Context should not have changed
-      assert Agent.get_state(agent, :context) == original_ctx
+      # System should not have changed
+      assert Agent.get_state(agent, :system) == original_system
     end
 
     test "returns error when running" do
@@ -88,9 +100,11 @@ defmodule Omni.Agent.StateTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
+      {:ok, _} = Agent.subscribe(agent)
+
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
-      assert {:error, :running} = Agent.set_state(agent, context: %Context{})
+      assert {:error, :running} = Agent.set_state(agent, system: "Changed")
       Agent.cancel(agent)
       _events = collect_events(agent, 2000)
     end
@@ -99,8 +113,8 @@ defmodule Omni.Agent.StateTest do
   describe "set_state/3" do
     test "replaces field with value" do
       {:ok, agent} = start_agent()
-      :ok = Agent.set_state(agent, :context, %Context{system: "New system"})
-      assert Agent.get_state(agent, :context).system == "New system"
+      :ok = Agent.set_state(agent, :system, "New system")
+      assert Agent.get_state(agent, :system) == "New system"
     end
 
     test "transforms field with function" do
@@ -109,10 +123,10 @@ defmodule Omni.Agent.StateTest do
       assert Keyword.get(Agent.get_state(agent, :opts), :temperature) == 0.7
     end
 
-    test "transforms context with function" do
-      {:ok, agent} = start_agent()
-      :ok = Agent.set_state(agent, :context, fn ctx -> %{ctx | system: "Updated"} end)
-      assert Agent.get_state(agent, :context).system == "Updated"
+    test "transforms meta with function" do
+      {:ok, agent} = start_agent(meta: %{count: 1})
+      :ok = Agent.set_state(agent, :meta, fn meta -> Map.put(meta, :count, meta.count + 1) end)
+      assert Agent.get_state(agent, :meta) == %{count: 2}
     end
 
     test "rejects non-settable field" do
@@ -124,48 +138,68 @@ defmodule Omni.Agent.StateTest do
       {:ok, agent} = start_agent()
       assert {:error, {:invalid_field, :private}} = Agent.set_state(agent, :private, %{})
     end
+
+    test "rejects non-settable field tree" do
+      {:ok, agent} = start_agent()
+      assert {:error, {:invalid_field, :tree}} = Agent.set_state(agent, :tree, [])
+    end
   end
 
-  describe "messages: at start_link" do
-    test "accepts pre-built messages list" do
+  describe "messages/tree: at start_link" do
+    test "accepts pre-built messages list (via :messages alias)" do
       user_msg = Omni.Message.new(role: :user, content: "Hello")
       asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
 
       {:ok, agent} =
         start_agent(messages: [user_msg, asst_msg])
 
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      assert length(Agent.get_state(agent, :tree)) == 2
     end
 
-    test "prompt builds on existing messages" do
+    test "accepts pre-built tree list" do
       user_msg = Omni.Message.new(role: :user, content: "Hello")
       asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
 
       {:ok, agent} =
-        start_agent(messages: [user_msg, asst_msg])
+        start_agent(tree: [user_msg, asst_msg])
+
+      assert length(Agent.get_state(agent, :tree)) == 2
+    end
+
+    test "prompt builds on existing tree" do
+      user_msg = Omni.Message.new(role: :user, content: "Hello")
+      asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
+
+      {:ok, agent} =
+        start_agent(tree: [user_msg, asst_msg])
 
       :ok = Agent.prompt(agent, "Follow up")
       _events = collect_events(agent)
 
       # 2 original + 2 new (user + assistant)
-      assert length(Agent.get_state(agent, :context).messages) == 4
+      assert length(Agent.get_state(agent, :tree)) == 4
     end
 
-    test "accepts context struct" do
-      user_msg = Omni.Message.new(role: :user, content: "Hello")
-      asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
+    test "rejects legacy :context start opt" do
+      Process.flag(:trap_exit, true)
 
-      context = %Context{
-        system: "You are helpful.",
-        messages: [user_msg, asst_msg],
-        tools: []
-      }
+      assert {:error, {:invalid_opt, :context}} =
+               Agent.start_link(
+                 model: model(),
+                 context: %Context{system: "Hello"},
+                 opts: [api_key: "test-key"]
+               )
+    end
 
-      {:ok, agent} =
-        start_agent(context: context)
+    test "rejects legacy :listener start opt" do
+      Process.flag(:trap_exit, true)
 
-      assert Agent.get_state(agent, :context).system == "You are helpful."
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      assert {:error, {:invalid_opt, :listener}} =
+               Agent.start_link(
+                 model: model(),
+                 listener: self(),
+                 opts: [api_key: "test-key"]
+               )
     end
   end
 
@@ -189,8 +223,8 @@ defmodule Omni.Agent.StateTest do
     end
   end
 
-  describe "listen/2" do
-    test "returns error when running" do
+  describe "subscribe/1 errors" do
+    test "subscribe is always allowed (even while running)" do
       stub_name = unique_stub_name()
       stub_slow(stub_name, @text_fixture)
 
@@ -200,28 +234,14 @@ defmodule Omni.Agent.StateTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
+      {:ok, _} = Agent.subscribe(agent)
+
       :ok = Agent.prompt(agent, "Hello!")
       Process.sleep(50)
-      assert {:error, :running} = Agent.listen(agent, self())
-      Agent.cancel(agent)
-      _events = collect_events(agent, 2000)
-    end
 
-    test "returns error when paused" do
-      {:ok, agent} =
-        start_agent_with_module(PauseAgent,
-          tools: [tool_with_handler()],
-          fixture: @tool_use_fixture,
-          listener: self()
-        )
+      # A second subscribe from the same pid is idempotent and still succeeds.
+      assert {:ok, %Omni.Agent.Snapshot{status: :running}} = Agent.subscribe(agent)
 
-      :ok = Agent.prompt(agent, "Use the tool")
-      events = collect_events(agent)
-      assert {:pause, {:authorize, %ToolUse{}}} = List.last(events)
-
-      assert {:error, :running} = Agent.listen(agent, self())
-
-      # Clean up
       Agent.cancel(agent)
       _events = collect_events(agent, 2000)
     end

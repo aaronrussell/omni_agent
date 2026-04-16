@@ -81,7 +81,7 @@ defmodule Omni.Agent.LifecycleTest do
       {:ok, agent} =
         start_agent(system: "You are a helpful assistant.")
 
-      assert Agent.get_state(agent, :context).system == "You are a helpful assistant."
+      assert Agent.get_state(agent, :system) == "You are a helpful assistant."
     end
   end
 
@@ -100,8 +100,8 @@ defmodule Omni.Agent.LifecycleTest do
     end
   end
 
-  describe "no listener" do
-    test "agent completes without crashing when no listener is set" do
+  describe "no subscribers" do
+    test "agent completes without crashing when nobody is subscribed" do
       stub_name = unique_stub_name()
       stub_fixture(stub_name, @text_fixture)
 
@@ -111,21 +111,14 @@ defmodule Omni.Agent.LifecycleTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
-      # Prompt without being the listener (pass a different listener)
-      # Actually, prompt/3 auto-sets caller as listener, so start a separate process
-      test_pid = self()
+      # No one subscribes — events are dropped, but the turn still completes.
+      :ok = Agent.prompt(agent, "Hello!")
 
-      spawn(fn ->
-        :ok = Agent.prompt(agent, "Hello!")
-        send(test_pid, :prompted)
-      end)
-
-      assert_receive :prompted, 1000
       # Give it time to finish the turn
       Process.sleep(500)
       assert Agent.get_state(agent, :status) == :idle
-      # Context should have committed messages
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      # Tree should have committed messages
+      assert length(Agent.get_state(agent, :tree)) == 2
     end
   end
 end
