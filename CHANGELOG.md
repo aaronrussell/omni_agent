@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-subscriber pub-sub.** `Omni.Agent.subscribe/1` returns `{:ok, %Snapshot{}}` and registers the caller; any number of processes can subscribe, crashed ones reaped via `Process.monitor`. `unsubscribe/1` removes a subscriber.
+- **`%Omni.Agent.Snapshot{}`** — point-in-time view including `:partial_message` (content blocks streamed so far) and `:paused` (`{reason, tool_use}` when awaiting a tool decision), so late joiners catch up mid-turn or while paused without missing earlier events.
+- **`:message` event** — `{:agent, pid, :message, %Message{}}` fires when each message is appended during a turn (user prompts, assistant responses, tool-result user messages).
+- **Decomposed `%Omni.Agent.State{}`** — new `:id`, `:system`, `:tools`, `:tree` fields replace the old `:context` field. `:tree` is a flat `[%Message{}]` in this release; a future version introduces a branching tree struct.
+
+### Changed
+
+- **Breaking: implicit listener replaced by explicit subscription.** `Omni.Agent.listen/2` and the `:listener` start opt are removed; callers must call `subscribe/1` explicitly. The first-prompt-caller-auto-registers behaviour is gone.
+- **Breaking: `:context` removed throughout.** `State.context`, the `:context` start opt, and `set_state(context: ...)` no longer exist. Use `:system`, `:tools`, and `:tree` (or the temporary `:messages` alias) individually; read via `get_state(agent, :system)` etc. Legacy `:listener` / `:context` start opts return `{:error, {:invalid_opt, key}}` to make migration visible.
+
 ## [0.2.0] - 2026-04-02
 
 ### Added
