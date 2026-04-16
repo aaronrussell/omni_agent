@@ -16,7 +16,7 @@ defmodule Omni.Agent.Server do
   use GenServer
 
   alias Omni.{Context, Message, Model, Response, Tool, Usage}
-  alias Omni.Agent.{Snapshot, State}
+  alias Omni.Agent.{Snapshot, State, Tree}
   alias Omni.Content.{Text, Thinking, ToolResult, ToolUse}
 
   defstruct [
@@ -32,15 +32,15 @@ defmodule Omni.Agent.Server do
     monitors: %{},
 
     # Turn lifecycle (set when a prompt starts, cleared by reset_turn)
-    # pending_messages: messages accumulated during the current turn
-    # pending_usage: accumulated usage for the current turn across all steps
+    # turn_start_node_id: id of the user node that opened the current turn;
+    #   used to derive the per-turn message slice for response events and to
+    #   rewind the active path on cancel/error.
     # prompt_opts: merged opts for the current turn (state.opts + call-site opts)
     # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
     #   while running/paused
     # partial_message: content blocks streamed so far for the in-flight
     #   assistant message; nil between steps and when not streaming
-    pending_messages: [],
-    pending_usage: %Usage{},
+    turn_start_node_id: nil,
     prompt_opts: [],
     next_prompt: nil,
     last_response: nil,
@@ -60,7 +60,7 @@ defmodule Omni.Agent.Server do
   ]
 
   @settable_fields [:model, :system, :tools, :opts, :meta]
-  @rejected_init_opts [:listener, :context]
+  @rejected_init_opts [:listener, :context, :messages]
 
   def start_link(init_arg, gs_opts) do
     # Capture $callers so the chain reaches back to whoever started the agent.
@@ -86,7 +86,7 @@ defmodule Omni.Agent.Server do
         model: model,
         system: opts[:system],
         tools: opts[:tools] || [],
-        tree: opts[:tree] || opts[:messages] || [],
+        tree: opts[:tree] || %Tree{},
         opts: Keyword.get(opts, :opts, []),
         meta: opts[:meta] || %{},
         private: private
@@ -273,6 +273,37 @@ defmodule Omni.Agent.Server do
   def handle_call({:get_state, key}, _from, server),
     do: {:reply, Map.get(server.state, key), server}
 
+  # -- Navigate --
+
+  def handle_call(
+        {:navigate, node_id},
+        _from,
+        %__MODULE__{state: %{status: :idle}} = server
+      ) do
+    case Tree.navigate(server.state.tree, node_id) do
+      {:ok, tree} ->
+        server = %{server | state: %{server.state | tree: tree}}
+        notify(server, :tree, tree)
+        {:reply, :ok, server}
+
+      {:error, :not_found} = error ->
+        {:reply, error, server}
+    end
+  end
+
+  def handle_call({:navigate, _}, _from, server), do: {:reply, {:error, :streaming}, server}
+
+  # -- Regenerate --
+
+  def handle_call(:regenerate, _from, %__MODULE__{state: %{status: :idle}} = server) do
+    case do_regenerate(server) do
+      {:ok, server} -> {:reply, :ok, server}
+      {:error, _} = error -> {:reply, error, server}
+    end
+  end
+
+  def handle_call(:regenerate, _from, server), do: {:reply, {:error, :streaming}, server}
+
   # -- Info (step messages) --
 
   @impl GenServer
@@ -296,7 +327,7 @@ defmodule Omni.Agent.Server do
         {:noreply, spawn_step(%{server | state: new_state})}
 
       {:stop, new_state} ->
-        server = reset_turn(%{server | state: new_state})
+        server = %{server | state: new_state} |> rewind_turn() |> reset_turn()
         notify(server, :error, reason)
         {:noreply, server}
     end
@@ -313,7 +344,7 @@ defmodule Omni.Agent.Server do
         {:noreply, spawn_step(%{server | state: new_state})}
 
       {:stop, new_state} ->
-        server = reset_turn(%{server | state: new_state})
+        server = %{server | state: new_state} |> rewind_turn() |> reset_turn()
         notify(server, :error, error)
         {:noreply, server}
     end
@@ -329,9 +360,19 @@ defmodule Omni.Agent.Server do
   def handle_info({:EXIT, pid, reason}, %{executor_task: {pid, _}} = server)
       when reason not in [:normal, :killed] do
     error = {:executor_crashed, reason}
-    server = reset_turn(server)
-    notify(server, :error, error)
-    {:noreply, server}
+    server = %{server | executor_task: nil}
+
+    case call_handle_error(server.module, error, server.state) do
+      {:retry, new_state} ->
+        notify(server, :retry, error)
+        approved = Enum.reverse(server.approved_uses)
+        {:noreply, spawn_executor(approved, %{server | state: new_state})}
+
+      {:stop, new_state} ->
+        server = %{server | state: new_state} |> rewind_turn() |> reset_turn()
+        notify(server, :error, error)
+        {:noreply, server}
+    end
   end
 
   # -- Info (subscriber DOWN) --
@@ -358,20 +399,75 @@ defmodule Omni.Agent.Server do
     call_terminate(server.module, reason, server.state)
   end
 
+  # -- Regenerate (idle-only, dispatched from handle_call) --
+
+  defp do_regenerate(server) do
+    tree = server.state.tree
+
+    case Tree.head(tree) do
+      nil ->
+        {:error, :invalid_head}
+
+      head_id ->
+        head = Tree.get_node(tree, head_id)
+
+        case head.message.role do
+          :user ->
+            start_regeneration(head_id, server)
+
+          :assistant ->
+            case head.parent_id do
+              nil ->
+                {:error, :invalid_head}
+
+              parent_id ->
+                parent = Tree.get_node(tree, parent_id)
+
+                if parent && parent.message.role == :user do
+                  {:ok, tree} = Tree.navigate(tree, parent_id)
+                  server = %{server | state: %{server.state | tree: tree}}
+                  notify(server, :tree, tree)
+                  start_regeneration(parent_id, server)
+                else
+                  {:error, :invalid_head}
+                end
+            end
+
+          _ ->
+            {:error, :invalid_head}
+        end
+    end
+  end
+
+  defp start_regeneration(user_node_id, server) do
+    prompt_opts = server.state.opts
+
+    server = %{
+      server
+      | state: %{server.state | status: :running, step: 0},
+        turn_start_node_id: user_node_id,
+        prompt_opts: prompt_opts
+    }
+
+    {:ok, evaluate_head(server)}
+  end
+
   # -- Turn start --
 
   defp start_turn(content, opts, server) do
     user_message = Message.new(role: :user, content: content)
     prompt_opts = Keyword.merge(server.state.opts, opts)
 
+    {node_id, tree} = Tree.push_node(server.state.tree, user_message)
+
     server = %{
       server
-      | state: %{server.state | status: :running, step: 0},
-        pending_messages: [user_message],
+      | state: %{server.state | status: :running, step: 0, tree: tree},
+        turn_start_node_id: node_id,
         prompt_opts: prompt_opts
     }
 
-    notify(server, :message, user_message)
+    notify_push(server, node_id)
     evaluate_head(server)
   end
 
@@ -381,7 +477,7 @@ defmodule Omni.Agent.Server do
     if max_steps_reached?(server) do
       finalize_turn(server.last_response, server)
     else
-      last_message = List.last(server.pending_messages)
+      last_message = Tree.get_node(server.state.tree, Tree.head(server.state.tree)).message
 
       cond do
         last_message.role == :user ->
@@ -419,25 +515,24 @@ defmodule Omni.Agent.Server do
     %Context{
       system: server.state.system,
       tools: server.state.tools,
-      messages: server.state.tree ++ server.pending_messages
+      messages: Tree.messages(server.state.tree)
     }
   end
 
   # -- Step completion --
 
   defp handle_step_complete(response, server) do
-    pending_usage = Usage.add(server.pending_usage, response.usage)
+    {node_id, tree} = Tree.push_node(server.state.tree, response.message, response.usage)
 
     server = %{
       server
-      | pending_messages: server.pending_messages ++ [response.message],
+      | state: %{server.state | tree: tree},
         step_task: nil,
         last_response: response,
-        pending_usage: pending_usage,
         partial_message: nil
     }
 
-    notify(server, :message, response.message)
+    notify_push(server, node_id)
     notify(server, :step, response)
     evaluate_head(server)
   end
@@ -544,10 +639,11 @@ defmodule Omni.Agent.Server do
         end
       end)
 
-    # Build user message with all tool results, append to pending
+    # Build user message with all tool results, push to tree
     user_message = Message.new(role: :user, content: final_results)
-    server = %{server | pending_messages: server.pending_messages ++ [user_message]}
-    notify(server, :message, user_message)
+    {node_id, tree} = Tree.push_node(server.state.tree, user_message)
+    server = %{server | state: %{server.state | tree: tree}}
+    notify_push(server, node_id)
 
     evaluate_head(server)
   end
@@ -594,16 +690,14 @@ defmodule Omni.Agent.Server do
     notify(server, :continue, response)
 
     user_message = Message.new(role: :user, content: prompt)
-    server = %{server | pending_messages: server.pending_messages ++ [user_message]}
-    notify(server, :message, user_message)
+    {node_id, tree} = Tree.push_node(server.state.tree, user_message)
+    server = %{server | state: %{server.state | tree: tree}}
+    notify_push(server, node_id)
 
     evaluate_head(server)
   end
 
   defp complete_turn(_response, server) do
-    new_tree = server.state.tree ++ server.pending_messages
-    server = %{server | state: %{server.state | tree: new_tree}}
-
     response = build_turn_response(server)
     server = reset_turn(server)
     notify(server, :stop, response)
@@ -617,8 +711,24 @@ defmodule Omni.Agent.Server do
     kill_task(server.executor_task)
 
     response = build_cancel_response(server)
+    server = rewind_turn(server)
     server = reset_turn(server)
     notify(server, :cancelled, response)
+    server
+  end
+
+  # Rewinds the active path to the parent of turn_start_node_id and emits :tree.
+  # The turn's nodes stay in the tree as an abandoned branch — navigation can
+  # still reach them. Called on cancel and on `:stop` error responses.
+  defp rewind_turn(%{turn_start_node_id: nil} = server), do: server
+
+  defp rewind_turn(server) do
+    start_node = Tree.get_node(server.state.tree, server.turn_start_node_id)
+    parent_id = start_node && start_node.parent_id
+
+    {:ok, tree} = Tree.navigate(server.state.tree, parent_id)
+    server = %{server | state: %{server.state | tree: tree}}
+    notify(server, :tree, tree)
     server
   end
 
@@ -632,27 +742,29 @@ defmodule Omni.Agent.Server do
   # -- Response builders --
 
   defp build_turn_response(server) do
-    last_assistant = find_last_assistant(server.pending_messages)
+    messages = turn_messages(server)
+    last_assistant = find_last_assistant(messages)
 
     %Response{
       model: server.state.model,
       message: last_assistant,
-      messages: server.pending_messages,
+      messages: messages,
       output: if(server.last_response, do: server.last_response.output),
       stop_reason: if(server.last_response, do: server.last_response.stop_reason, else: :stop),
-      usage: server.pending_usage
+      usage: turn_usage(server)
     }
   end
 
   defp build_cancel_response(server) do
-    last_assistant = find_last_assistant(server.pending_messages)
+    messages = turn_messages(server)
+    last_assistant = find_last_assistant(messages)
 
     %Response{
       model: server.state.model,
       message: last_assistant,
-      messages: server.pending_messages,
+      messages: messages,
       stop_reason: :cancelled,
-      usage: server.pending_usage
+      usage: turn_usage(server)
     }
   end
 
@@ -660,6 +772,30 @@ defmodule Omni.Agent.Server do
     messages
     |> Enum.reverse()
     |> Enum.find(&(&1.role == :assistant))
+  end
+
+  # Returns the messages added to the tree during the current turn, in order.
+  # Walks the active path and drops nodes prior to turn_start_node_id.
+  defp turn_messages(%{turn_start_node_id: nil}), do: []
+
+  defp turn_messages(%{turn_start_node_id: start_id, state: %{tree: tree}}) do
+    tree
+    |> Enum.drop_while(fn node -> node.id != start_id end)
+    |> Enum.map(& &1.message)
+  end
+
+  # Sums usage across the per-turn node slice.
+  defp turn_usage(%{turn_start_node_id: nil}), do: %Usage{}
+
+  defp turn_usage(%{turn_start_node_id: start_id, state: %{tree: tree}}) do
+    tree
+    |> Enum.drop_while(fn node -> node.id != start_id end)
+    |> Enum.reduce(%Usage{}, fn node, acc ->
+      case node.usage do
+        nil -> acc
+        u -> Usage.add(acc, u)
+      end
+    end)
   end
 
   # -- Snapshot --
@@ -797,8 +933,7 @@ defmodule Omni.Agent.Server do
     %{
       server
       | state: %{server.state | status: :idle, step: 0},
-        pending_messages: [],
-        pending_usage: %Usage{},
+        turn_start_node_id: nil,
         step_task: nil,
         executor_task: nil,
         rejected_results: [],
@@ -830,6 +965,16 @@ defmodule Omni.Agent.Server do
   defp notify(server, type, data) do
     msg = {:agent, self(), type, data}
     Enum.each(server.subscribers, &send(&1, msg))
+    :ok
+  end
+
+  # Emits :message + :node for a node just pushed to the tree. :message is the
+  # flat-consumer path; :node carries tree metadata (%{id, parent_id, message,
+  # usage}) for tree-aware consumers. Both fire on every push.
+  defp notify_push(server, node_id) do
+    node = Tree.get_node(server.state.tree, node_id)
+    notify(server, :message, node.message)
+    notify(server, :node, node)
     :ok
   end
 

@@ -1,6 +1,8 @@
 defmodule Omni.Agent.PromptTest do
   use Omni.Agent.AgentCase, async: true
 
+  alias Omni.Agent.Tree
+
   describe "basic prompt/response" do
     test "streams text events and emits :stop with a valid response" do
       {:ok, agent} = start_agent()
@@ -37,7 +39,7 @@ defmodule Omni.Agent.PromptTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # After two turns, tree should have 4 messages
-      assert length(Agent.get_state(agent, :tree)) == 4
+      assert Tree.size(Agent.get_state(agent, :tree)) == 4
     end
   end
 
@@ -59,7 +61,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "First message")
       _events = collect_events(agent)
 
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       assert length(messages) == 2
 
       stub_name = unique_stub_name()
@@ -75,12 +77,12 @@ defmodule Omni.Agent.PromptTest do
 
       :ok = Agent.prompt(agent2, "First")
       _events = collect_events(agent2)
-      assert length(Agent.get_state(agent2, :tree)) == 2
+      assert Tree.size(Agent.get_state(agent2, :tree)) == 2
 
       stub_fixture(stub_name, @text_fixture)
       :ok = Agent.prompt(agent2, "Second")
       _events = collect_events(agent2)
-      assert length(Agent.get_state(agent2, :tree)) == 4
+      assert Tree.size(Agent.get_state(agent2, :tree)) == 4
     end
   end
 
@@ -93,7 +95,7 @@ defmodule Omni.Agent.PromptTest do
       events = collect_events(agent)
 
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       assert length(messages) == 2
 
       [user_msg | _] = messages
@@ -115,6 +117,44 @@ defmodule Omni.Agent.PromptTest do
       [user_msg, assistant_msg] = resp.messages
       assert user_msg.role == :user
       assert assistant_msg.role == :assistant
+    end
+  end
+
+  describe "tree events" do
+    test ":node event fires alongside :message for every push" do
+      {:ok, agent} =
+        start_agent(
+          tools: [tool_with_handler()],
+          fixtures: [@tool_use_fixture, @text_fixture]
+        )
+
+      :ok = Agent.prompt(agent, "What's the weather?")
+      events = collect_events(agent)
+
+      message_events = for {:message, _} <- events, do: :ok
+      node_events = for {:node, _} <- events, do: :ok
+
+      # One push per: user prompt, assistant (step 1), tool-result user, assistant (step 2)
+      assert length(message_events) == 4
+      assert length(node_events) == 4
+    end
+
+    test ":node event carries tree metadata" do
+      {:ok, agent} = start_agent()
+
+      :ok = Agent.prompt(agent, "Hello!")
+
+      # First push: user node
+      assert_receive {:agent, ^agent, :node,
+                      %{id: 1, parent_id: nil, message: %{role: :user}, usage: nil}},
+                     2000
+
+      # Second push: assistant node with usage and parent_id
+      assert_receive {:agent, ^agent, :node,
+                      %{id: 2, parent_id: 1, message: %{role: :assistant}, usage: %Omni.Usage{}}},
+                     2000
+
+      _events = collect_events(agent)
     end
   end
 

@@ -1,6 +1,8 @@
 defmodule Omni.Agent.ErrorTest do
   use Omni.Agent.AgentCase, async: true
 
+  alias Omni.Agent.Tree
+
   describe "handle_error" do
     test "default handle_error stops with :error event on step failure" do
       stub_name = unique_stub_name()
@@ -18,9 +20,9 @@ defmodule Omni.Agent.ErrorTest do
       events = collect_events(agent)
 
       assert {:error, _reason} = List.last(events)
-      # Agent goes to :idle (not :error) — pending messages discarded
+      # Agent goes to :idle (not :error) — active path rewound to pre-turn head
       assert Agent.get_state(agent, :status) == :idle
-      assert Agent.get_state(agent, :tree) == []
+      assert Tree.messages(Agent.get_state(agent, :tree)) == []
     end
 
     test "custom {:retry, state} retries and succeeds on second attempt" do
@@ -183,9 +185,34 @@ defmodule Omni.Agent.ErrorTest do
       events = collect_events(agent)
       assert {:error, _reason} = List.last(events)
 
-      # Agent is idle, context messages are empty (user msg was discarded)
+      # Agent is idle, active path is empty (user msg sits on an abandoned branch)
       assert Agent.get_state(agent, :status) == :idle
-      assert Agent.get_state(agent, :tree) == []
+      assert Tree.messages(Agent.get_state(agent, :tree)) == []
+    end
+
+    test "errored turn's nodes remain reachable via navigate" do
+      stub_name = unique_stub_name()
+      stub_error(stub_name)
+
+      {:ok, agent} =
+        Agent.start_link(
+          model: model(),
+          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
+        )
+
+      {:ok, _} = Agent.subscribe(agent)
+
+      :ok = Agent.prompt(agent, "Hello!")
+      events = collect_events(agent)
+      assert {:error, _} = List.last(events)
+
+      tree = Agent.get_state(agent, :tree)
+      # Active path rewound but the user node survives
+      assert tree.path == []
+      assert Tree.size(tree) == 1
+
+      :ok = Agent.navigate(agent, 1)
+      assert Agent.get_state(agent, :tree).path == [1]
     end
 
     test "can prompt again after error" do
@@ -212,8 +239,9 @@ defmodule Omni.Agent.ErrorTest do
 
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
-      # Only the successful turn's messages
-      assert length(Agent.get_state(agent, :tree)) == 2
+      # Active path contains only the successful turn's messages (the failed
+      # turn's user node is still on the tree as an abandoned branch)
+      assert length(Tree.messages(Agent.get_state(agent, :tree))) == 2
     end
   end
 
@@ -240,7 +268,7 @@ defmodule Omni.Agent.ErrorTest do
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
 
       # Context should have committed messages from the successful turn
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       assert length(messages) == 2
 
       [user_msg, assistant_msg] = messages

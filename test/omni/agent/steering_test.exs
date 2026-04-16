@@ -1,6 +1,8 @@
 defmodule Omni.Agent.SteeringTest do
   use Omni.Agent.AgentCase, async: true
 
+  alias Omni.Agent.Tree
+
   describe "prompt while running" do
     test "stages prompt and returns :ok" do
       stub_name = unique_stub_name()
@@ -102,7 +104,7 @@ defmodule Omni.Agent.SteeringTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # Tree should have messages from two turns
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       # First user + assistant + second user + assistant = 4
       assert length(messages) == 4
     end
@@ -157,13 +159,68 @@ defmodule Omni.Agent.SteeringTest do
       events = collect_events(agent, 2000)
       assert {:cancelled, %Response{stop_reason: :cancelled}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
-      # Cancel discards pending messages, tree stays empty
-      assert Agent.get_state(agent, :tree) == []
+      # Cancel rewinds the active path; abandoned nodes stay in the tree
+      assert Tree.messages(Agent.get_state(agent, :tree)) == []
     end
 
     test "cancel while idle returns error" do
       {:ok, agent} = start_agent()
       assert {:error, :idle} = Agent.cancel(agent)
+    end
+
+    test "cancel emits :tree before :cancelled" do
+      stub_name = unique_stub_name()
+      stub_slow(stub_name, @text_fixture)
+
+      {:ok, agent} =
+        Agent.start_link(
+          model: model(),
+          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
+        )
+
+      {:ok, _} = Agent.subscribe(agent)
+
+      :ok = Agent.prompt(agent, "Hello!")
+      Process.sleep(50)
+      :ok = Agent.cancel(agent)
+
+      events = collect_events(agent, 2000)
+
+      # :tree comes before :cancelled
+      tree_idx = Enum.find_index(events, &match?({:tree, _}, &1))
+      cancelled_idx = Enum.find_index(events, &match?({:cancelled, _}, &1))
+
+      assert is_integer(tree_idx)
+      assert is_integer(cancelled_idx)
+      assert tree_idx < cancelled_idx
+    end
+
+    test "cancelled turn's nodes remain reachable via navigate" do
+      stub_name = unique_stub_name()
+      stub_slow(stub_name, @text_fixture)
+
+      {:ok, agent} =
+        Agent.start_link(
+          model: model(),
+          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
+        )
+
+      {:ok, _} = Agent.subscribe(agent)
+
+      :ok = Agent.prompt(agent, "Hello!")
+      Process.sleep(50)
+      :ok = Agent.cancel(agent)
+
+      _events = collect_events(agent, 2000)
+
+      tree = Agent.get_state(agent, :tree)
+      # Active path is empty but the abandoned user node survives
+      assert tree.path == []
+      assert Tree.size(tree) == 1
+
+      # The abandoned node can be navigated back to
+      :ok = Agent.navigate(agent, 1)
+      assert Agent.get_state(agent, :tree).path == [1]
     end
 
     test "cancel response includes pending messages" do
@@ -233,7 +290,7 @@ defmodule Omni.Agent.SteeringTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # Verify the staged prompt made it into the tree
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       user_contents = for %{role: :user} = msg <- messages, do: msg
       # Should have "Start" and "Redirect!" as user messages (not "Continue.")
       assert length(user_contents) >= 2
@@ -263,7 +320,7 @@ defmodule Omni.Agent.SteeringTest do
       # Should complete with :stop (max_steps forces stop, staged prompt ignored)
       assert {:stop, %Response{}} = List.last(events)
       # Only 1 turn worth of messages (user + assistant = 2)
-      assert length(Agent.get_state(agent, :tree)) == 2
+      assert Tree.size(Agent.get_state(agent, :tree)) == 2
     end
   end
 end

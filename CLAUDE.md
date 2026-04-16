@@ -10,9 +10,9 @@ The package is separated from `omni` because the stateless LLM API layer (omni) 
 
 ### Core idea
 
-An agent is a process that holds a model, a context (system prompt, messages, tools), and user-defined state. The outside world sends prompts in; the agent works on them (potentially across multiple LLM steps) and sends events back. Users control behaviour through lifecycle callbacks.
+An agent is a process that holds a model, a system prompt, a list of tools, a branching `%Omni.Agent.Tree{}` of messages, and user-defined state. The outside world sends prompts in; the agent works on them (potentially across multiple LLM steps) and sends events back to any number of subscribers. Users control behaviour through lifecycle callbacks.
 
-The agent owns the **turn** (a complete prompt-to-stop cycle), while the **application** owns the session (persistence, branching, navigation, cumulative usage tracking). During a turn, messages accumulate internally as `pending_messages`. On success (`{:stop, response}`), they're committed to `context.messages`. On cancel or error, they're discarded — the context always stays in a valid state.
+The agent owns the **turn** (a complete prompt-to-stop cycle). Messages commit to the tree as soon as they arrive (user prompt on turn start, assistant on step complete, tool-result user after executor, continuation user on `{:continue, ...}`). A `turn_start_node_id` cursor marks the user node that opened the turn; per-turn response slices (`messages`, `usage`) are derived by walking the active path from that cursor forward. On cancel or error, the active path rewinds to the pre-turn head — the turn's nodes stay on the tree as an abandoned branch, reachable via `navigate/2`.
 
 ### What lives here vs in `omni`
 
@@ -21,9 +21,10 @@ The agent owns the **turn** (a complete prompt-to-stop cycle), while the **appli
 | `Omni.Agent` — behaviour, `use` macro, public API | `Omni.stream_text/3`, `Omni.generate_text/3` |
 | `Omni.Agent.Server` — GenServer internals | `Omni.Context`, `Omni.Message`, `Omni.Response` |
 | `Omni.Agent.State` — public state struct | `Omni.Tool`, `Omni.Tool.Runner` |
-| `Omni.Agent.Step` — LLM request task | `Omni.Model`, `Omni.Usage` |
-| `Omni.Agent.Executor` — tool execution task | `Omni.Content.*` content blocks |
-| | Providers, dialects, streaming pipeline |
+| `Omni.Agent.Snapshot` — subscriber-facing point-in-time view | `Omni.Model`, `Omni.Usage` |
+| `Omni.Agent.Tree` — branching conversation tree | `Omni.Content.*` content blocks |
+| `Omni.Agent.Step` — LLM request task | Providers, dialects, streaming pipeline |
+| `Omni.Agent.Executor` — tool execution task | |
 
 The dependency is strictly one-directional — `omni_agent` depends on `omni`, never the reverse. The sole integration point for LLM requests is `Omni.stream_text/3` (called in `Step`). Tool execution uses `Omni.Tool.Runner.run/3` (called in `Executor`).
 
@@ -61,25 +62,34 @@ The agent GenServer never blocks on IO. All blocking work is delegated to spawne
 
 Agent state is split into two structs:
 
-- **`Omni.Agent.State`** — the public struct passed to all callbacks. Contains `model`, `context`, `opts`, `meta`, `private`, `status`, `step`.
-- **`Omni.Agent.Server`** (internal) — wraps `State` and adds GenServer machinery: task refs, pending messages/usage, tool decision state, staged prompts. Never exposed to callbacks.
+- **`Omni.Agent.State`** — the public struct passed to all callbacks. Contains `id`, `model`, `system`, `tools`, `tree`, `opts`, `meta`, `private`, `status`, `step`.
+- **`Omni.Agent.Server`** (internal) — wraps `State` and adds GenServer machinery: task refs, `turn_start_node_id` cursor, tool decision state, staged prompts, subscribers, partial streaming message. Never exposed to callbacks.
 
-### Context and pending messages
+### Tree and turn cursor
 
-The agent holds a `%Context{}` (from `omni`) containing the system prompt, committed messages, and tools. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `pending_messages` (internal server state). LLM requests see `context.messages ++ pending_messages`. On `{:stop, ...}`, pending messages are committed to `context.messages`. On cancel or error, they're discarded.
+The tree (`%Omni.Agent.Tree{}`) is an append-only branching structure of messages. Node ids are integers (`id = size + 1` on push). The tree tracks an **active path** — a cursor through the tree that `push_node` extends and `navigate/2` repositions. `Tree.messages/1` flattens the active path into a `[%Message{}]` list.
 
-This design means the context is always in a valid state — no trailing user messages after cancel/error. The application can use `set_state/2,3` to update the context (swap messages for navigation, hydrate a session, etc.) when the agent is idle.
+Every message commits to the tree as it's produced — there is no `pending_messages` buffer. During a turn, the server holds a `turn_start_node_id` cursor pointing at the user node that opened the turn. Per-turn response slices (for `:step`, `:continue`, `:stop`, `:cancelled` events) are derived by walking the active path from that cursor forward and summing node usages. On cancel or error, the active path rewinds to the parent of `turn_start_node_id`; the turn's nodes stay on the tree as an abandoned branch, reachable later via `navigate/2`.
+
+LLM requests see `Tree.messages(state.tree)` as their full history — no merging, the tree is the source of truth.
 
 ### Agent loop
 
 The agent loop operates at two levels:
 
 - **Step** — a single LLM request-response. If the model calls tools, the agent handles them and makes another request.
-- **Turn** — starts with `prompt/3`, ends with `{:stop, response}`. `handle_turn` fires when the model responds without executable tools. If it returns `{:continue, ...}`, the agent keeps working within the same turn.
+- **Turn** — starts with `prompt/3`, ends with `{:stop, response}`. `handle_turn` fires when the model responds without executable tools. If it returns `{:continue, ...}`, the agent keeps working within the same turn (cursor stays fixed; continuation user message pushes under the same `turn_start_node_id`).
 
-A single `evaluate_head/1` function drives the state machine: last pending message is a user message → spawn step, assistant with tool uses → tool decision phase, assistant without → `handle_turn`.
+A single `evaluate_head/1` function drives the state machine: look up the message at `Tree.head(tree)` — user message → spawn step, assistant with tool uses → tool decision phase, assistant without → `handle_turn`.
 
 The agent does **not** use `Omni.Loop` for tool execution — it calls `stream_text` with `max_steps: 1` so Loop never enters its tool loop. The agent manages tools itself via `handle_tool_use`/`handle_tool_result` callbacks, enabling per-tool approval gates and pause/resume.
+
+### Tree navigation
+
+- `navigate/2` — move the active path to any node (unrestricted; idle only).
+- `regenerate/1` — re-run a step from the active head. At an assistant head, navigates to the parent (which must be a user message) and spawns a new step — the new assistant is pushed as a sibling of the previous. At a user head, spawns a step directly (retry-after-error path). Empty or invalid head returns `{:error, :invalid_head}`.
+
+Regenerate from a specific node composes `navigate/2` + `regenerate/1` — there is no `regenerate/2`.
 
 ### Tool decision flow
 
@@ -89,6 +99,10 @@ When the model produces tool use blocks, all tool uses flow through `handle_tool
 2. **Execution check**: if any approved tool lacks a handler → `handle_turn` with `stop_reason: :tool_use`
 3. **Execution phase**: approved tools run in parallel via `Tool.Runner.run/3`, results (executed + rejected + provided) passed to `handle_tool_result`
 
+### Subscribers
+
+Any process can call `Omni.Agent.subscribe/1` to receive events as `{:agent, pid, type, data}` messages. Subscribers are monitored — crashed ones are reaped via `Process.monitor`. `subscribe/1` returns `{:ok, %Omni.Agent.Snapshot{}}` — a point-in-time view including `partial_message` (content blocks streamed so far in the in-flight assistant) and `paused` (`{reason, tool_use}` while awaiting a tool decision) — so late joiners can render current state without missing earlier events.
+
 ## Module Layout
 
 ```
@@ -96,6 +110,8 @@ lib/omni/
 ├── agent.ex                    # Public module: behaviour, use macro, callback defaults, API
 ├── agent/
 │   ├── state.ex                # Public state struct passed to callbacks
+│   ├── snapshot.ex             # Point-in-time view returned by subscribe/1
+│   ├── tree.ex                 # Branching conversation tree (pure data)
 │   ├── server.ex               # Internal GenServer (@moduledoc false)
 │   ├── step.ex                 # Step process: streams LLM request (@moduledoc false)
 │   └── executor.ex             # Executor process: parallel tool execution (@moduledoc false)
@@ -104,13 +120,13 @@ lib/omni/
 ## Conventions
 
 - The term is "tool use", not "tool call" (aligns with Anthropic's API, consistent with `omni`).
-- Agent statuses: `:idle`, `:running`, `:paused`. Status determines which API calls are valid.
+- Agent statuses: `:idle`, `:running`, `:paused`. Status determines which API calls are valid. `navigate/2`, `regenerate/1`, and `set_state/2,3` are idle-only.
 - All callbacks are optional with `defoverridable` defaults. Users implement only what they need.
-- `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:context`, `:opts`, `:meta`.
-- `:step` events carry the per-step `%Response{}` from each LLM request. `:stop`, `:continue`, and `:cancelled` events carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
-- The agent has no `session_id` or built-in persistence — session identity and storage are application concerns. The `{:stop, response}` event carries enough context (`messages`, `usage`) for external listeners to persist.
+- `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:system`, `:tools`, `:opts`, `:meta`. `:tree` is deliberately not settable — pass it at startup for hydration or compose `navigate`/`regenerate` at runtime.
+- Events: `:message` fires on every tree append (flat-consumer path); `:node` fires alongside with `%{id, parent_id, message, usage}` (tree-aware consumers); `:tree` fires on non-incremental changes (navigate, regenerate, cancel/error rewind). `:step` carries the per-step `%Response{}`. `:stop`, `:continue`, and `:cancelled` carry a `%Response{}` with `messages` — the turn's slice derived from the cursor. `:error` carries the bare error reason term.
+- The agent has no `session_id` or built-in persistence — session identity and storage are application concerns (persistence arrives in Phase 3 of the durable-agents work). The `{:stop, response}` event carries enough context (`messages`, `usage`) for external listeners to persist.
 - `prompt/3` behaviour depends on status: idle → start turn, running/paused → stage for next turn boundary (steering).
-- On error (after `handle_error/2` returns `{:stop, state}`), pending messages are discarded and the agent goes to `:idle`. The app can prompt again immediately.
+- On error or cancel, the active path rewinds to the pre-turn head and the agent goes to `:idle`. The turn's nodes stay on the tree as an abandoned branch (reachable via `navigate/2`). The app can prompt again immediately.
 
 ## Testing
 
@@ -132,4 +148,5 @@ No tests require API keys. `test/support/` is compiled in the test environment v
 
 The `context/` directory contains detailed design and planning documents. This CLAUDE.md provides sufficient context for most tasks — consult the design doc when working in depth on the agent internals.
 
-- **`context/design.md`** — Full architecture reference covering: relationship to `omni`, public API (`prompt`, `set_state`), lifecycle callbacks (`init`, `handle_tool_use`, `handle_tool_result`, `handle_turn`, `handle_error`, `terminate`), process model (Step/Executor/Tool Tasks), pause/resume, prompt queuing/steering, context and pending messages model, the completion tool pattern, and the evaluate_head state machine.
+- **`context/design.md`** — Full architecture reference covering: relationship to `omni`, public API (`prompt`, `set_state`), lifecycle callbacks (`init`, `handle_tool_use`, `handle_tool_result`, `handle_turn`, `handle_error`, `terminate`), process model (Step/Executor/Tool Tasks), pause/resume, prompt queuing/steering, the completion tool pattern, and the evaluate_head state machine.
+- **`context/durable_agents.md`** — Multi-phase plan for adding durability, multi-subscriber pub-sub, branching tree, navigation, and persistence. Phases 1 and 2 are complete (subscribers + snapshot + state decomposition; tree + per-message commit + navigate/regenerate + cancel/error rewind). Phases 3 and 4 add Store/Supervisor/Registry and `:config` events.

@@ -11,12 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Multi-subscriber pub-sub.** `Omni.Agent.subscribe/1` returns `{:ok, %Snapshot{}}` and registers the caller; any number of processes can subscribe, crashed ones reaped via `Process.monitor`. `unsubscribe/1` removes a subscriber.
 - **`%Omni.Agent.Snapshot{}`** — point-in-time view including `:partial_message` (content blocks streamed so far) and `:paused` (`{reason, tool_use}` when awaiting a tool decision), so late joiners catch up mid-turn or while paused without missing earlier events.
 - **`:message` event** — `{:agent, pid, :message, %Message{}}` fires when each message is appended during a turn (user prompts, assistant responses, tool-result user messages).
-- **Decomposed `%Omni.Agent.State{}`** — new `:id`, `:system`, `:tools`, `:tree` fields replace the old `:context` field. `:tree` is a flat `[%Message{}]` in this release; a future version introduces a branching tree struct.
+- **Decomposed `%Omni.Agent.State{}`** — new `:id`, `:system`, `:tools`, `:tree` fields replace the old `:context` field.
+- **`%Omni.Agent.Tree{}`** — branching conversation tree replaces the flat `[%Message{}]` form of `:tree`. Messages commit to the tree as they arrive; the active path can be moved via `navigate/2` and branches are preserved. Use `Omni.Agent.Tree.messages/1` to flatten the active path when a plain message list is needed.
+- **`navigate/2`** — set the active path to any node in the tree. Unrestricted with respect to target shape; invalid heads are caught at action time (`prompt`/`regenerate`).
+- **`regenerate/1`** — re-run a step from the current head. At an assistant head, the new assistant is pushed as a sibling of the previous (both branches preserved). At a user head, the existing user node is reused (retry-after-error path). To regenerate from a specific node, compose `navigate/2` + `regenerate/1`.
+- **`:node` event** — `{:agent, pid, :node, %{id, parent_id, message, usage}}` fires alongside `:message` on every tree append, giving tree-aware consumers the metadata they need to mirror the structure.
+- **`:tree` event** — `{:agent, pid, :tree, %Omni.Agent.Tree{}}` fires on non-incremental changes (navigate, regenerate, cancel/error rewind).
 
 ### Changed
 
 - **Breaking: implicit listener replaced by explicit subscription.** `Omni.Agent.listen/2` and the `:listener` start opt are removed; callers must call `subscribe/1` explicitly. The first-prompt-caller-auto-registers behaviour is gone.
-- **Breaking: `:context` removed throughout.** `State.context`, the `:context` start opt, and `set_state(context: ...)` no longer exist. Use `:system`, `:tools`, and `:tree` (or the temporary `:messages` alias) individually; read via `get_state(agent, :system)` etc. Legacy `:listener` / `:context` start opts return `{:error, {:invalid_opt, key}}` to make migration visible.
+- **Breaking: `:context` removed throughout.** `State.context`, the `:context` start opt, and `set_state(context: ...)` no longer exist. Use `:system`, `:tools`, and `:tree` separately; read via `get_state(agent, :system)` etc. Legacy `:listener` / `:context` / `:messages` start opts return `{:error, {:invalid_opt, key}}` to make migration visible.
+- **Breaking: `state.tree` is now an `%Omni.Agent.Tree{}`, not a `[%Message{}]`.** Callbacks reading `state.tree` must use `Omni.Agent.Tree.messages/1` to get the flat message list.
+- **Cancel and error rewind the active path** instead of discarding pending messages. The turn's tree nodes stay in place as an abandoned branch, reachable via `navigate/2`. The `:cancelled` and `:error` events now fire after a `:tree` event that reflects the rewind.
+- **Per-message commit.** Messages commit to the tree as soon as they are produced (user prompt on turn start, assistant on step complete, tool-result user after executor, continuation user on `{:continue, ...}`). There is no longer a `pending_messages` buffer held until turn end.
+
+### Removed
+
+- **`:messages` start-opt alias** — introduced as a migration helper in the previous release, now dropped. Pass an `%Omni.Agent.Tree{}` via `:tree` instead.
 
 ## [0.2.0] - 2026-04-02
 

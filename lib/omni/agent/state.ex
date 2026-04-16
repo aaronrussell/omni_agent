@@ -13,10 +13,11 @@ defmodule Omni.Agent.State do
     * `:model` — the `%Model{}` this agent is using
     * `:system` — optional system prompt string
     * `:tools` — list of `%Tool{}` structs available to the model
-    * `:tree` — the conversation's committed messages. In Phase 1 this is a
-      flat `[%Message{}]`; a later phase replaces it with a branching tree
-      struct. Only reflects committed messages from completed turns —
-      in-progress turn messages are held internally until the turn completes
+    * `:tree` — the conversation as an `%Omni.Agent.Tree{}`. Messages commit
+      to the tree as soon as they are produced. The tree is append-only; the
+      active path can be moved via `navigate/2` and branches are preserved.
+      Use `Omni.Agent.Tree.messages/1` to flatten the active path into a
+      `[%Message{}]` list
     * `:opts` — agent-level default inference options (keyword list), passed
       to `stream_text` each step
 
@@ -36,7 +37,8 @@ defmodule Omni.Agent.State do
       (e.g. rejecting tools after a threshold)
   """
 
-  alias Omni.{Message, Model, Tool}
+  alias Omni.{Model, Tool}
+  alias Omni.Agent.Tree
 
   @typedoc "The public agent state passed to all callbacks."
   @type t :: %__MODULE__{
@@ -44,7 +46,7 @@ defmodule Omni.Agent.State do
           model: Model.t(),
           system: String.t() | nil,
           tools: [Tool.t()],
-          tree: [Message.t()],
+          tree: Tree.t(),
           opts: keyword(),
           meta: map(),
           private: map(),
@@ -57,7 +59,7 @@ defmodule Omni.Agent.State do
     :model,
     :system,
     tools: [],
-    tree: [],
+    tree: %Tree{},
     opts: [],
     meta: %{},
     private: %{},

@@ -1,6 +1,6 @@
 # Durable Agents
 
-**Status:** Phase 1 complete; Phases 2–4 planned
+**Status:** Phases 1 and 2 complete; Phases 3–4 planned
 **Supersedes:** `context/session.md` (Session-wrapper design, superseded)
 **Direction:** `Omni.Agent` absorbs durability / persistence / tree concerns directly — no separate `Omni.Session` process.
 
@@ -169,7 +169,6 @@ Behavior unchanged. `prompt` while running/paused still stages for the next turn
 ```elixir
 :ok = Omni.Agent.navigate(pid, node_id)         # set active path
 :ok = Omni.Agent.regenerate(pid)                # re-run from current head
-:ok = Omni.Agent.regenerate(pid, node_id)       # navigate + re-run
 ```
 
 Only valid when idle; `{:error, :streaming}` while running or paused.
@@ -186,9 +185,11 @@ Only valid when idle; `{:error, :streaming}` while running or paused.
 
 `regenerate` at a user head doubles as the retry API for "HTTP error left a dangling user message" — navigate to the user node, regenerate.
 
-`prompt/3` validates head state: it accepts content on an assistant head or empty/root, and accepts `ToolResult` content blocks when the head ends in a tool_use. Invalid combinations return `{:error, :invalid_head}`.
+`prompt/3` validates head state: it accepts content on an assistant head or empty/root, and accepts `ToolResult` content blocks when the head ends in a tool_use. Invalid combinations return `{:error, :invalid_head}`. *(Deferred past Phase 2 — see Phase 2 notes.)*
 
 **No `edit/3` API.** Compose `navigate(parent_id)` + `prompt(new_content)` — two calls, same outcome, no new surface to maintain. `regenerate` is kept because it's semantically distinct (no new user message added).
+
+**No `regenerate/2` API.** Originally spec'd with a `node_id` argument; dropped during P2 because the same outcome composes from `navigate/2` + `regenerate/1` with cleaner event semantics (a single `:tree` event per navigation). Can be revisited if a use case surfaces.
 
 ### Inspection / configuration
 
@@ -529,28 +530,39 @@ Build and test incrementally. Each phase is shippable.
 - **Rejected fields in `set_state`.** `:context` and `:tree` are not settable. `:context` returns `{:invalid_key, :context}` (from the keyword-list form) or `{:invalid_field, :context}` (from the single-field form). Same for `:tree`.
 - **Test helpers auto-subscribe the test process.** `start_agent`/`start_agent_with_module` in `test/support/agent_case.ex` subscribe the calling test pid by default. Opt out with `subscribe: false`. Not part of the library surface — purely a test-suite convenience to avoid boilerplate in every test.
 
-### Phase 2 — Tree
+### Phase 2 — Tree ✅ Completed
 
 - Port `OmniUI.Tree` → `Omni.Agent.Tree` (port tests with namespace swap)
 - Tree replaces flat message list in state and snapshot
 - Per-message commit to tree on append
-- `turn_start_node_id` tracking for cancel/error rewind
+- `turn_start_node_id` tracking for cancel/error rewind and per-turn response slices
 - `:node` event on active-path append (carries `%{id, parent_id, message, usage}`)
 - `:tree` event on non-incremental structural change
-- `navigate/2`, `regenerate/2,3` APIs
+- `navigate/2`, `regenerate/1` APIs
 - Tree mutations during streaming return `{:error, :streaming}`
 - Cancel/error rewind active-path cursor; tree stays append-only
 
 **Key tests:**
 
-- Tree module tests (ported from `OmniUI.TreeTest`)
+- Tree module tests (ported from `OmniUI.TreeTest`) — 73 tests
 - `prompt/3` appends user node, fires `:node`, subsequent step appends assistant via `:node`
 - `:step` → assistant message pushed; tool results → tool-result user message pushed
 - `navigate/2` updates active path, emits `:tree`
-- `regenerate/2,3` re-runs from active head; new assistant is sibling of previous
+- `regenerate/1` re-runs from active head; new assistant is sibling of previous
 - Branching preserved across navigate + regenerate
 - Cancel/error rewinds cursor; abandoned branch still reachable via navigate
 - Tree mutations while streaming return `{:error, :streaming}`
+- `turn_start_node_id` survives pause/resume (final `:stop` response carries the whole turn slice)
+
+**Notes / refinements during implementation:**
+
+- **`regenerate/2` dropped.** The design originally included `regenerate(pid, node_id)` as an atomic navigate+regenerate. During implementation we found it emits two `:tree` events (one for the explicit navigate, one for the implicit navigate-to-parent when the head is an assistant). Since callers can compose the same operation with `navigate/2` + `regenerate/1` at negligible cost and with cleaner event semantics, `regenerate/2` was removed. Can be revisited if real use cases surface.
+- **`prompt/3` head-state validation deferred.** The design specifies `prompt/3` accepts content only on empty/assistant heads and `ToolResult` blocks on tool_use heads. Phase 2 ships without this validation — callers can currently push invalid sequences via `navigate` + `prompt`, and the LLM rejects them downstream. Scheduled to land alongside the persistence work (P3) or whenever real need arises.
+- **Executor-crash path now routes through `handle_error/2`.** Pre-P2, executor crashes unconditionally reset the turn and emitted `:error`. P2 follow-up: mirror the step-crash pattern — call `handle_error`, respect `{:retry, state}` (re-spawn the executor with the preserved `approved_uses`) and `{:stop, state}` (rewind + reset + `:error`). Restores symmetry with the step path.
+- **Per-turn `usage` derived from tree nodes, not a parallel counter.** The old `pending_usage` accumulator was removed; `turn_usage/1` walks the active-path slice from `turn_start_node_id` and sums node usages. Keeps the tree as the single source of truth.
+- **Event ordering for rewind: `:tree` before `:cancelled` / `:error`.** Structural change is signalled first, lifecycle event follows. Subscribers that mirror tree state apply the rewind before rendering the terminal event.
+- **`:continue` response excludes the continuation user message.** Preserved from the pre-tree behaviour. The `:continue` response is the turn slice "so far" (user prompt → assistant of the completed step). The continuation user message is pushed after, and the final `:stop` response carries the full extended slice including it. Semantically consistent with step/turn boundaries: a continuation without a following assistant would be a partial step, not a turn.
+- **Node id algorithm kept as `size + 1`.** Briefly considered a separate `:next_id` counter for robustness against manual node deletion, but under the append-only invariant `size + 1` is strictly safer (no risk of the counter drifting from the node map). Integer ids are cheap in events, in the `new_node_ids` persistence hint, and readable in test output; random ids (ULID/UUID) deferred until cross-agent tree merging becomes a real need.
 
 ### Phase 3 — Persistence + Supervisor
 
@@ -650,7 +662,7 @@ lib/omni/
 
 - **DETS adapter** — ship alongside FileSystem or defer. Default: defer unless JSON format proves painful.
 - **Idle timeout default** — pick a reasonable value (likely 5–15 min). Tests use ~50ms.
-- **`turn_start_node_id` lifecycle across pause/resume** — confirm rewind anchor survives pause (it should; pause is not a turn boundary).
+- ~~**`turn_start_node_id` lifecycle across pause/resume**~~ — resolved in P2: cursor survives pause/resume untouched (test in `pause_resume_test.exs` asserts the final `:stop` response carries the whole turn slice).
 
 ---
 

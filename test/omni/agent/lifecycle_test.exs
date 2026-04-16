@@ -1,6 +1,8 @@
 defmodule Omni.Agent.LifecycleTest do
   use Omni.Agent.AgentCase, async: true
 
+  alias Omni.Agent.Tree
+
   describe "custom init callback" do
     test "init sets private" do
       {:ok, agent} =
@@ -118,7 +120,7 @@ defmodule Omni.Agent.LifecycleTest do
       Process.sleep(500)
       assert Agent.get_state(agent, :status) == :idle
       # Tree should have committed messages
-      assert length(Agent.get_state(agent, :tree)) == 2
+      assert Tree.size(Agent.get_state(agent, :tree)) == 2
     end
   end
 end

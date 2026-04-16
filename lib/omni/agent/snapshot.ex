@@ -17,7 +17,8 @@ defmodule Omni.Agent.Snapshot do
   runtime data and is never broadcast.
   """
 
-  alias Omni.{Message, Model, Tool}
+  alias Omni.{Model, Tool}
+  alias Omni.Agent.Tree
   alias Omni.Content.ToolUse
 
   @typedoc "A content block (Text, Thinking, ToolUse, etc.) as emitted by streaming events."
@@ -29,7 +30,7 @@ defmodule Omni.Agent.Snapshot do
           model: Model.t(),
           system: String.t() | nil,
           tools: [Tool.t()],
-          tree: [Message.t()],
+          tree: Tree.t(),
           opts: keyword(),
           meta: map(),
           status: :idle | :running | :paused,
@@ -43,7 +44,7 @@ defmodule Omni.Agent.Snapshot do
     :model,
     :system,
     tools: [],
-    tree: [],
+    tree: %Tree{},
     opts: [],
     meta: %{},
     status: :idle,

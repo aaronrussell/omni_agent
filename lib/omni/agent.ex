@@ -3,10 +3,11 @@ defmodule Omni.Agent do
   Stateful LLM agents for Elixir. Multi-turn conversations with lifecycle
   callbacks, tool approval, steering, and multi-subscriber event streams.
 
-  An agent holds a model, a system prompt, tools, a conversation tree, and
-  user-defined state. The outside world sends prompts in; the agent streams
-  events to any number of subscribers. Between turns, lifecycle callbacks
-  control whether the agent continues, stops, or pauses for human approval.
+  An agent holds a model, a system prompt, tools, a branching conversation
+  tree, and user-defined state. The outside world sends prompts in; the agent
+  streams events to any number of subscribers. Between turns, lifecycle
+  callbacks control whether the agent continues, stops, or pauses for human
+  approval.
 
   Use an agent instead of the stateless `generate_text`/`stream_text` API when
   you need the process to own the conversation — managing context, executing
@@ -81,9 +82,8 @@ defmodule Omni.Agent do
     * `:model` (required) — `{provider_id, model_id}` tuple or `%Model{}`
     * `:system` — system prompt string
     * `:tools` — list of `%Tool{}` structs available to the model
-    * `:tree` — list of `%Message{}` structs for session hydration. In this
-      phase `:tree` is a flat list; a later phase will introduce a branching
-      tree struct. `:messages` is accepted as an alias.
+    * `:tree` — an `%Omni.Agent.Tree{}` for session hydration. Typically only
+      used when forking or loading a prior conversation; omit to start fresh
     * `:meta` — initial metadata map (user data for application use)
     * `:id` — agent identifier (reserved; currently unused — persistence
       arrives in a later phase and will populate this automatically)
@@ -97,6 +97,7 @@ defmodule Omni.Agent do
 
     * `:listener` — removed; use `subscribe/1` instead
     * `:context` — removed; pass `:system`, `:tools`, `:tree` separately
+    * `:messages` — removed; pass a `%Omni.Agent.Tree{}` via `:tree`
 
   ## Subscribers
 
@@ -133,13 +134,23 @@ defmodule Omni.Agent do
       {:agent, pid, :tool_use_delta, %{index: 1, delta: "{\\"q\\":"}}
       {:agent, pid, :tool_use_end,   %{index: 1, content: %ToolUse{}}}
 
-  **Message events** — fired when a complete message is appended:
+  **Message events** — fired when a complete message is appended to the tree:
 
       {:agent, pid, :message, %Message{}}
+      {:agent, pid, :node,    %{id: id, parent_id: parent_id, message: %Message{}, usage: usage}}
 
-  Fires for user messages on `prompt/3` append and for tool-result user
-  messages after executor completes. Fires for assistant messages when each
-  step completes (immediately before the `:step` event).
+  Both fire together on every append: `:message` carries the message alone
+  (the flat-consumer path); `:node` carries tree metadata for consumers that
+  mirror the tree structure. They fire for user messages on `prompt/3` append
+  and for tool-result user messages after the executor completes, and for
+  assistant messages when each step completes (immediately before `:step`).
+
+  **Tree events** — fired on non-incremental tree changes:
+
+      {:agent, pid, :tree, %Omni.Agent.Tree{}}
+
+  Fires after `navigate/2`, `regenerate/2`, and cancel/error rewind — any
+  change to the active path that wasn't driven by a normal append.
 
   **Lifecycle events** — emitted by the agent at turn boundaries:
 
@@ -156,13 +167,14 @@ defmodule Omni.Agent do
   per-step `%Response{}` from `stream_text`. `:stop` and `:continue` fire at
   turn boundaries — `:continue` when `handle_turn/2` returns
   `{:continue, ...}` (the agent is looping), `:stop` when `handle_turn/2`
-  returns `{:stop, ...}` (the turn's messages are committed to `state.tree`).
-  `:stop`, `:continue`, and `:cancelled` all carry a `%Response{}` with
-  `messages` — all messages accumulated during the turn. `:cancelled` fires
-  after `cancel/1` with `stop_reason: :cancelled` — pending messages are
-  discarded (tree unchanged). `:error` fires after `handle_error/2` returns
-  `{:stop, state}` — pending messages are discarded and the agent goes idle.
-  A simple chatbot (one step per prompt) sees only `:stop`.
+  returns `{:stop, ...}`. `:stop`, `:continue`, and `:cancelled` all carry a
+  `%Response{}` with `messages` — all messages accumulated during the turn.
+  `:cancelled` fires after `cancel/1` with `stop_reason: :cancelled`; the
+  turn's tree nodes remain as an abandoned branch and the active path is
+  rewound to the pre-turn head (a `:tree` event fires alongside).
+  `:error` fires after `handle_error/2` returns `{:stop, state}` with the
+  same rewind behaviour. A simple chatbot (one step per prompt) sees only
+  `:stop`.
 
   ## Tools and the agent loop
 
@@ -332,7 +344,7 @@ defmodule Omni.Agent do
       end
   """
 
-  alias Omni.Agent.{Snapshot, State}
+  alias Omni.Agent.{Snapshot, State, Tree}
   alias Omni.Content.{ToolResult, ToolUse}
   alias Omni.Response
 
@@ -568,9 +580,11 @@ defmodule Omni.Agent do
   @doc """
   Cancels the current turn.
 
-  Kills any running tasks, discards pending messages, and broadcasts
-  `{:agent, pid, :cancelled, %Response{stop_reason: :cancelled}}`.
-  The agent's `state.tree` remains unchanged.
+  Kills any running tasks, rewinds the tree's active path to the pre-turn
+  head, and broadcasts `{:agent, pid, :cancelled, %Response{stop_reason: :cancelled}}`.
+  The turn's nodes stay in the tree as an abandoned branch — reachable via
+  `navigate/2` — and a `:tree` event fires alongside to notify subscribers of
+  the structural change.
 
   Returns `{:error, :idle}` if the agent is already idle.
   """
@@ -587,7 +601,7 @@ defmodule Omni.Agent do
 
       Agent.get_state(agent)             #=> %State{model: ..., tree: ..., ...}
       Agent.get_state(agent, :status)    #=> :idle
-      Agent.get_state(agent, :tree)      #=> [%Message{}, ...]
+      Agent.get_state(agent, :tree)      #=> %Omni.Agent.Tree{}
       Agent.get_state(agent, :private)   #=> %{}
   """
   @spec get_state(GenServer.server()) :: State.t()
@@ -638,5 +652,52 @@ defmodule Omni.Agent do
           :ok | {:error, :running} | {:error, term()}
   def set_state(agent, field, value_or_fun) when is_atom(field) do
     GenServer.call(agent, {:set_state, field, value_or_fun})
+  end
+
+  @doc """
+  Sets the active path in the conversation tree to the given node.
+
+  Navigation is unrestricted — any node in the tree is reachable, including
+  abandoned branches left behind by cancel/error rewind. Validation of what
+  the branch looks like (dangling tool_uses, etc.) happens at action time in
+  `prompt/3` and `regenerate/1,2`.
+
+  Broadcasts `{:agent, pid, :tree, %Omni.Agent.Tree{}}` on success. Returns
+  `{:error, :streaming}` while the agent is running or paused, and
+  `{:error, :not_found}` if the node id doesn't exist in the tree.
+
+  Idle only.
+  """
+  @spec navigate(GenServer.server(), Tree.node_id() | nil) ::
+          :ok | {:error, :streaming | :not_found}
+  def navigate(agent, node_id) do
+    GenServer.call(agent, {:navigate, node_id})
+  end
+
+  @doc """
+  Regenerates from the current active-path head.
+
+  Behaviour depends on the head's message role:
+
+    * **Assistant** — navigates to the parent (a user message) and spawns a new
+      step. The new assistant is pushed as a sibling of the previous, so the
+      old branch remains reachable via `navigate/2`
+    * **User** — spawns a step from the head directly. Covers the retry path
+      after a step error
+
+  To regenerate from a specific node, compose `navigate/2` + `regenerate/1`:
+
+      :ok = Omni.Agent.navigate(agent, node_id)
+      :ok = Omni.Agent.regenerate(agent)
+
+  Returns `{:error, :streaming}` while running or paused, and
+  `{:error, :invalid_head}` if the tree is empty or the head is in an
+  unexpected state (e.g. an assistant with no user parent).
+
+  Idle only.
+  """
+  @spec regenerate(GenServer.server()) :: :ok | {:error, :streaming | :invalid_head}
+  def regenerate(agent) do
+    GenServer.call(agent, :regenerate)
   end
 end

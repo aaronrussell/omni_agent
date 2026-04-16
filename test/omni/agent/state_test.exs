@@ -1,6 +1,8 @@
 defmodule Omni.Agent.StateTest do
   use Omni.Agent.AgentCase, async: true
 
+  alias Omni.Agent.Tree
+
   describe "get_state" do
     test "returns the full state struct" do
       {:ok, agent} = start_agent()
@@ -10,7 +12,7 @@ defmodule Omni.Agent.StateTest do
       assert state.status == :idle
       assert state.private == %{}
       assert state.meta == %{}
-      assert state.tree == []
+      assert state.tree == %Tree{}
       assert state.tools == []
       assert state.system == nil
       assert state.id == nil
@@ -19,7 +21,7 @@ defmodule Omni.Agent.StateTest do
     test "returns individual fields by key" do
       {:ok, agent} = start_agent()
       assert %Omni.Model{id: "claude-haiku-4-5"} = Agent.get_state(agent, :model)
-      assert Agent.get_state(agent, :tree) == []
+      assert Agent.get_state(agent, :tree) == %Tree{}
       assert Agent.get_state(agent, :tools) == []
       assert Agent.get_state(agent, :system) == nil
       assert Agent.get_state(agent, :status) == :idle
@@ -141,43 +143,41 @@ defmodule Omni.Agent.StateTest do
 
     test "rejects non-settable field tree" do
       {:ok, agent} = start_agent()
-      assert {:error, {:invalid_field, :tree}} = Agent.set_state(agent, :tree, [])
+      assert {:error, {:invalid_field, :tree}} = Agent.set_state(agent, :tree, %Tree{})
     end
   end
 
-  describe "messages/tree: at start_link" do
-    test "accepts pre-built messages list (via :messages alias)" do
+  describe "tree: at start_link" do
+    test "accepts pre-built tree struct" do
       user_msg = Omni.Message.new(role: :user, content: "Hello")
       asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
 
-      {:ok, agent} =
-        start_agent(messages: [user_msg, asst_msg])
+      tree =
+        %Tree{}
+        |> Tree.push(user_msg)
+        |> Tree.push(asst_msg)
 
-      assert length(Agent.get_state(agent, :tree)) == 2
-    end
+      {:ok, agent} = start_agent(tree: tree)
 
-    test "accepts pre-built tree list" do
-      user_msg = Omni.Message.new(role: :user, content: "Hello")
-      asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
-
-      {:ok, agent} =
-        start_agent(tree: [user_msg, asst_msg])
-
-      assert length(Agent.get_state(agent, :tree)) == 2
+      assert Tree.size(Agent.get_state(agent, :tree)) == 2
     end
 
     test "prompt builds on existing tree" do
       user_msg = Omni.Message.new(role: :user, content: "Hello")
       asst_msg = Omni.Message.new(role: :assistant, content: "Hi there")
 
-      {:ok, agent} =
-        start_agent(tree: [user_msg, asst_msg])
+      tree =
+        %Tree{}
+        |> Tree.push(user_msg)
+        |> Tree.push(asst_msg)
+
+      {:ok, agent} = start_agent(tree: tree)
 
       :ok = Agent.prompt(agent, "Follow up")
       _events = collect_events(agent)
 
       # 2 original + 2 new (user + assistant)
-      assert length(Agent.get_state(agent, :tree)) == 4
+      assert Tree.size(Agent.get_state(agent, :tree)) == 4
     end
 
     test "rejects legacy :context start opt" do
@@ -198,6 +198,17 @@ defmodule Omni.Agent.StateTest do
                Agent.start_link(
                  model: model(),
                  listener: self(),
+                 opts: [api_key: "test-key"]
+               )
+    end
+
+    test "rejects legacy :messages start opt" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {:invalid_opt, :messages}} =
+               Agent.start_link(
+                 model: model(),
+                 messages: [],
                  opts: [api_key: "test-key"]
                )
     end

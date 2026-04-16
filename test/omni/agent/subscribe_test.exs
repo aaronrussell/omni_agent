@@ -1,7 +1,7 @@
 defmodule Omni.Agent.SubscribeTest do
   use Omni.Agent.AgentCase, async: true
 
-  alias Omni.Agent.Snapshot
+  alias Omni.Agent.{Snapshot, Tree}
 
   describe "subscribe/1 basics" do
     test "returns {:ok, %Snapshot{}} with agent's current state" do
@@ -10,7 +10,7 @@ defmodule Omni.Agent.SubscribeTest do
       assert {:ok, %Snapshot{} = snap} = Agent.subscribe(agent)
       assert snap.status == :idle
       assert snap.step == 0
-      assert snap.tree == []
+      assert snap.tree == %Tree{}
       assert snap.tools == []
       assert snap.system == nil
       assert snap.id == nil
@@ -44,7 +44,7 @@ defmodule Omni.Agent.SubscribeTest do
 
       # start_agent already subscribed us; a second subscribe yields a fresh snapshot
       assert {:ok, snap} = Agent.subscribe(agent)
-      assert length(snap.tree) == 2
+      assert Tree.size(snap.tree) == 2
     end
 
     test "subscribing the same pid twice is idempotent (no duplicate events)" do

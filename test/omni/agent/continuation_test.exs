@@ -1,6 +1,8 @@
 defmodule Omni.Agent.ContinuationTest do
   use Omni.Agent.AgentCase, async: true
 
+  alias Omni.Agent.Tree
+
   describe "continuation" do
     test "{:continue, prompt, state} loops for 3 turns" do
       {:ok, agent} =
@@ -30,7 +32,7 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       _events = collect_events(agent)
 
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       # Initial user + assistant, then 2 more (user continue + assistant) per extra turn
       # = 2 + 2 + 2 = 6 messages
       assert length(messages) == 6
@@ -70,7 +72,7 @@ defmodule Omni.Agent.ContinuationTest do
       assert Agent.get_state(agent, :status) == :idle
 
       # Context should be committed (includes tool result messages)
-      messages = Agent.get_state(agent, :tree)
+      messages = Tree.messages(Agent.get_state(agent, :tree))
       assert length(messages) > 0
     end
   end
