@@ -40,22 +40,22 @@ defmodule Omni.Agent.Server do
     #
     # Naming mirrors the event hierarchy: :message < :step < :turn.
     #
-    # turn_messages: messages accumulated in the current segment (committed
-    #   on every :turn event, cleared between segments). A segment is
-    #   always 2n messages — user/assistant pairs.
-    # turn_usage: accumulated usage for the current turn across all steps.
     # step_message: the current step's user message (initial prompt, a
     #   continuation prompt, or the tool-result user message). Paired with
     #   the assistant response when emitting :step so :step.response.messages
     #   is always [user, assistant].
+    # turn_messages: messages accumulated in the current segment (committed
+    #   on every :turn event, cleared between segments). A segment is
+    #   always 2n messages — user/assistant pairs.
+    # turn_usage: accumulated usage for the current turn across all steps.
     # prompt_opts: merged opts for the current turn (state.opts + call-site opts).
     # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
     #   while running/paused.
     # partial_message: current streaming assistant message, or nil. Updated
     #   from Step events; cleared on :message emission and reset_turn.
+    step_message: nil,
     turn_messages: [],
     turn_usage: %Usage{},
-    step_message: nil,
     prompt_opts: [],
     next_prompt: nil,
     last_response: nil,
@@ -389,8 +389,8 @@ defmodule Omni.Agent.Server do
     %{
       server
       | state: %{server.state | status: :running, step: 0},
-        turn_messages: [user_message],
         step_message: user_message,
+        turn_messages: [user_message],
         prompt_opts: prompt_opts
     }
     |> tap(&notify(&1, :message, user_message))
@@ -573,8 +573,8 @@ defmodule Omni.Agent.Server do
 
     server = %{
       server
-      | turn_messages: server.turn_messages ++ [user_message],
-        step_message: user_message
+      | step_message: user_message,
+        turn_messages: server.turn_messages ++ [user_message]
     }
 
     notify(server, :message, user_message)
@@ -624,7 +624,7 @@ defmodule Omni.Agent.Server do
     notify(server, :turn, {:continue, response})
 
     user_message = Message.new(role: :user, content: prompt)
-    server = %{server | turn_messages: [user_message], step_message: user_message}
+    server = %{server | step_message: user_message, turn_messages: [user_message]}
     notify(server, :message, user_message)
     evaluate_head(server)
   end
@@ -756,9 +756,9 @@ defmodule Omni.Agent.Server do
     %{
       server
       | state: %{server.state | status: :idle, step: 0},
+        step_message: nil,
         turn_messages: [],
         turn_usage: %Usage{},
-        step_message: nil,
         step_task: nil,
         executor_task: nil,
         rejected_results: [],
