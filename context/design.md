@@ -1,6 +1,11 @@
 # Omni Agent Design
 
-**Status:** Implemented
+**Status:** Superseded in part — being refactored. See
+[`agent-redesign.md`](./agent-redesign.md) for the current target design
+(state shape, events, pub/sub, `init/1` shape). Sections of this document
+covering those areas are out of date until the refactor lands and this doc
+is rewritten. [`roadmap.md`](./roadmap.md) tracks phase progress.
+
 **Last updated:** March 2026
 
 ---

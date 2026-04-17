@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **Flat `%Omni.Agent.State{}`** — nested `%Context{}` replaced with top-level `:system`, `:messages`, `:tools` fields. `:meta` removed (deferred to future `Omni.Session`).
+- **`init/1` shape** — now receives the fully-resolved `%State{}` and returns `{:ok, state} | {:error, term}`, enabling callbacks to set any field (including defaults for `:system`, `:tools`, etc.). The old opts-in/private-out shape is gone.
+- **`set_state` keys** — settable fields are now `:model`, `:system`, `:messages`, `:tools`, `:opts`. `:context` and `:meta` are gone; `:private` remains callback-owned.
+
+### Added
+
+- **`:private` start option** — initial private map, previously only settable via `init/1`.
+- **Messages invariant** — `set_state(:messages, ...)` and the state returned from `init/1` are validated to be empty or end with an `:assistant` message containing no `%ToolUse{}` blocks. Violations return `{:error, :invalid_messages}`.
+
 ## [0.2.0] - 2026-04-02
 
 ### Added

@@ -60,7 +60,7 @@ defmodule Omni.Agent.PromptTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # After two turns, context should have 4 messages
-      assert length(Agent.get_state(agent, :context).messages) == 4
+      assert length(Agent.get_state(agent, :messages)) == 4
     end
   end
 
@@ -82,7 +82,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "First message")
       _events = collect_events(agent)
 
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       assert length(messages) == 2
 
       stub_name = unique_stub_name()
@@ -96,12 +96,12 @@ defmodule Omni.Agent.PromptTest do
 
       :ok = Agent.prompt(agent2, "First")
       _events = collect_events(agent2)
-      assert length(Agent.get_state(agent2, :context).messages) == 2
+      assert length(Agent.get_state(agent2, :messages)) == 2
 
       stub_fixture(stub_name, @text_fixture)
       :ok = Agent.prompt(agent2, "Second")
       _events = collect_events(agent2)
-      assert length(Agent.get_state(agent2, :context).messages) == 4
+      assert length(Agent.get_state(agent2, :messages)) == 4
     end
   end
 
@@ -114,7 +114,7 @@ defmodule Omni.Agent.PromptTest do
       events = collect_events(agent)
 
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       assert length(messages) == 2
 
       [user_msg | _] = messages

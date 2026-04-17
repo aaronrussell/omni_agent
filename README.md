@@ -46,15 +46,18 @@ end
 ### Custom agent with callbacks
 
 Define a module with `use Omni.Agent` to customize behaviour. All callbacks are
-optional with sensible defaults:
+optional with sensible defaults. `init/1` receives the fully-resolved initial
+`%State{}` and returns a possibly-modified state — use it to bake in defaults
+or to customize the state based on per-invocation input passed via `:private`:
 
 ```elixir
-defmodule MyAgent do
+defmodule GreeterAgent do
   use Omni.Agent
 
   @impl Omni.Agent
-  def init(opts) do
-    {:ok, %{user: opts[:user]}}
+  def init(state) do
+    system = "You are a helpful assistant. The user's name is #{state.private.user}."
+    {:ok, %{state | system: system}}
   end
 
   @impl Omni.Agent
@@ -62,40 +65,35 @@ defmodule MyAgent do
     {:continue, "Continue where you left off.", state}
   end
 
-  def handle_turn(_response, state) do
-    {:stop, state}
-  end
+  def handle_turn(_response, state), do: {:stop, state}
 end
 
-{:ok, agent} = MyAgent.start_link(
+{:ok, agent} = GreeterAgent.start_link(
   model: {:anthropic, "claude-sonnet-4-5-20250514"},
-  system: "You are a helpful assistant.",
-  user: :current_user
+  private: %{user: "Alice"}
 )
 ```
 
-Override `start_link/1` to bake in defaults — standard GenServer pattern:
+For static defaults — system prompt, tools, inference opts — set them in
+`init/1` directly rather than overriding `start_link/1`:
 
 ```elixir
 defmodule ResearchAgent do
   use Omni.Agent
 
-  def start_link(opts \\ []) do
-    defaults = [
-      model: {:anthropic, "claude-sonnet-4-5-20250514"},
+  @impl Omni.Agent
+  def init(state) do
+    state = %{state |
       system: "You are a research assistant.",
       tools: [SearchTool.new(), FetchTool.new()]
-    ]
-    super(Keyword.merge(defaults, opts))
+    }
+    {:ok, state}
   end
-
-  @impl Omni.Agent
-  def handle_turn(%{stop_reason: :stop}, state) do
-    {:continue, "Continue working. Call task_complete when finished.", state}
-  end
-
-  def handle_turn(_response, state), do: {:stop, state}
 end
+
+{:ok, agent} = ResearchAgent.start_link(
+  model: {:anthropic, "claude-sonnet-4-5-20250514"}
+)
 ```
 
 ### Tool approval
@@ -132,14 +130,14 @@ callbacks. Define a completion tool and loop until the model calls it:
 defmodule ResearchAgent do
   use Omni.Agent
 
-  def start_link(opts \\ []) do
-    defaults = [
-      model: {:anthropic, "claude-sonnet-4-5-20250514"},
+  @impl Omni.Agent
+  def init(state) do
+    state = %{state |
       system: "You are a research assistant. Use your tools to research, " <>
               "then call task_complete with your findings.",
       tools: [SearchTool.new(), FetchTool.new(), task_complete()]
-    ]
-    super(Keyword.merge(defaults, opts))
+    }
+    {:ok, state}
   end
 
   @impl Omni.Agent

@@ -4,15 +4,77 @@ defmodule Omni.Agent.LifecycleTest do
   describe "custom init callback" do
     test "init sets private" do
       {:ok, agent} =
-        start_agent_with_module(WithInit, agent_name: "test-bot")
+        start_agent_with_module(WithInit, private: %{agent_name: "test-bot"})
 
-      assert Agent.get_state(agent, :private) == %{name: "test-bot"}
+      assert Agent.get_state(agent, :private) == %{agent_name: "test-bot", name: "test-bot"}
     end
 
     test "init with default name" do
       {:ok, agent} = start_agent_with_module(WithInit, [])
 
       assert Agent.get_state(agent, :private) == %{name: "default"}
+    end
+
+    test "init receives fully-resolved state" do
+      defmodule CaptureState do
+        use Omni.Agent
+
+        @impl Omni.Agent
+        def init(state) do
+          send(state.private.test_pid, {:init_state, state})
+          {:ok, state}
+        end
+      end
+
+      {:ok, _agent} =
+        start_agent_with_module(
+          CaptureState,
+          system: "hello",
+          tools: [],
+          private: %{test_pid: self()}
+        )
+
+      assert_receive {:init_state, %Omni.Agent.State{} = state}
+      assert state.system == "hello"
+      assert state.messages == []
+      assert state.tools == []
+      assert state.private.test_pid == self()
+    end
+
+    test "init can mutate any state field" do
+      defmodule MutateAll do
+        use Omni.Agent
+
+        @impl Omni.Agent
+        def init(state) do
+          {:ok, %{state | system: "mutated", tools: [:fake_tool]}}
+        end
+      end
+
+      {:ok, agent} = start_agent_with_module(MutateAll, [])
+
+      assert Agent.get_state(agent, :system) == "mutated"
+      assert Agent.get_state(agent, :tools) == [:fake_tool]
+    end
+
+    test "init returning invalid messages fails start_link" do
+      defmodule BadInit do
+        use Omni.Agent
+
+        @impl Omni.Agent
+        def init(state) do
+          bad = [Omni.Message.new(role: :user, content: "dangling user")]
+          {:ok, %{state | messages: bad}}
+        end
+      end
+
+      Process.flag(:trap_exit, true)
+
+      assert {:error, :invalid_messages} =
+               BadInit.start_link(
+                 model: model(),
+                 opts: [api_key: "test-key"]
+               )
     end
   end
 
@@ -81,7 +143,7 @@ defmodule Omni.Agent.LifecycleTest do
       {:ok, agent} =
         start_agent(system: "You are a helpful assistant.")
 
-      assert Agent.get_state(agent, :context).system == "You are a helpful assistant."
+      assert Agent.get_state(agent, :system) == "You are a helpful assistant."
     end
   end
 
@@ -124,8 +186,8 @@ defmodule Omni.Agent.LifecycleTest do
       # Give it time to finish the turn
       Process.sleep(500)
       assert Agent.get_state(agent, :status) == :idle
-      # Context should have committed messages
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      # State should have committed messages
+      assert length(Agent.get_state(agent, :messages)) == 2
     end
   end
 end

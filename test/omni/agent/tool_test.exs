@@ -21,7 +21,7 @@ defmodule Omni.Agent.ToolTest do
       assert [%Text{}] = resp.message.content
 
       # Context should have all messages: user, assistant(tool_use), user(tool_results), assistant(text)
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       assert length(messages) >= 4
     end
   end
@@ -82,7 +82,7 @@ defmodule Omni.Agent.ToolTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # The tool result user message should contain modified content
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
 
       tool_result_msgs =
         Enum.filter(messages, fn msg ->
@@ -143,7 +143,7 @@ defmodule Omni.Agent.ToolTest do
       assert {:cancelled, %Response{stop_reason: :cancelled}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Cancel discards pending messages, context stays empty
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :messages) == []
     end
   end
 

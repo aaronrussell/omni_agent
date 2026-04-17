@@ -18,7 +18,7 @@ defmodule Omni.Agent.ErrorTest do
       assert {:error, _reason} = List.last(events)
       # Agent goes to :idle (not :error) — pending messages discarded
       assert Agent.get_state(agent, :status) == :idle
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :messages) == []
     end
 
     test "custom {:retry, state} retries and succeeds on second attempt" do
@@ -175,7 +175,7 @@ defmodule Omni.Agent.ErrorTest do
 
       # Agent is idle, context messages are empty (user msg was discarded)
       assert Agent.get_state(agent, :status) == :idle
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :messages) == []
     end
 
     test "can prompt again after error" do
@@ -202,7 +202,7 @@ defmodule Omni.Agent.ErrorTest do
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Only the successful turn's messages
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      assert length(Agent.get_state(agent, :messages)) == 2
     end
   end
 
@@ -228,7 +228,7 @@ defmodule Omni.Agent.ErrorTest do
       assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
 
       # Context should have committed messages from the successful turn
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       assert length(messages) == 2
 
       [user_msg, assistant_msg] = messages

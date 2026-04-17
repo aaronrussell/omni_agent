@@ -54,7 +54,7 @@ defmodule Omni.Agent.Server do
     paused_reason: nil
   ]
 
-  @settable_fields [:model, :context, :opts, :meta]
+  @settable_fields [:model, :system, :messages, :tools, :opts]
 
   def start_link(init_arg, gs_opts) do
     # Capture $callers so the chain reaches back to whoever started the agent.
@@ -73,17 +73,11 @@ defmodule Omni.Agent.Server do
     Process.flag(:trap_exit, true)
 
     with {:ok, model} <- resolve_model(opts[:model]),
-         {:ok, private} <- call_init(module, opts) do
-      agent_state = %State{
-        model: model,
-        context: build_init_context(opts),
-        opts: Keyword.get(opts, :opts, []),
-        meta: opts[:meta] || %{},
-        private: private
-      }
-
+         initial_state = build_initial_state(model, opts),
+         {:ok, %State{} = state} <- call_init(module, initial_state),
+         :ok <- State.validate_messages(state.messages) do
       server = %__MODULE__{
-        state: agent_state,
+        state: state,
         module: module,
         listener: opts[:listener],
         tool_timeout: Keyword.get(opts, :tool_timeout, 5_000)
@@ -99,18 +93,15 @@ defmodule Omni.Agent.Server do
   defp resolve_model(%Model{} = model), do: {:ok, model}
   defp resolve_model(nil), do: {:error, :missing_model}
 
-  defp build_init_context(opts) do
-    case opts[:context] do
-      %Context{} = ctx ->
-        ctx
-
-      nil ->
-        %Context{
-          system: opts[:system],
-          messages: opts[:messages] || [],
-          tools: opts[:tools] || []
-        }
-    end
+  defp build_initial_state(model, opts) do
+    %State{
+      model: model,
+      system: opts[:system],
+      messages: opts[:messages] || [],
+      tools: opts[:tools] || [],
+      opts: Keyword.get(opts, :opts, []),
+      private: opts[:private] || %{}
+    }
   end
 
   # -- Calls --
@@ -213,12 +204,11 @@ defmodule Omni.Agent.Server do
         do: value_or_fun.(Map.get(server.state, field)),
         else: value_or_fun
 
-    case maybe_resolve_field(field, new_value) do
-      {:ok, resolved} ->
-        {:reply, :ok, %{server | state: Map.put(server.state, field, resolved)}}
-
-      {:error, _} = error ->
-        {:reply, error, server}
+    with {:ok, resolved} <- maybe_resolve_field(field, new_value),
+         :ok <- maybe_validate_field(field, resolved) do
+      {:reply, :ok, %{server | state: Map.put(server.state, field, resolved)}}
+    else
+      {:error, _} = error -> {:reply, error, server}
     end
   end
 
@@ -367,7 +357,11 @@ defmodule Omni.Agent.Server do
   end
 
   defp build_context(server) do
-    %{server.state.context | messages: server.state.context.messages ++ server.pending_messages}
+    %Context{
+      system: server.state.system,
+      messages: server.state.messages ++ server.pending_messages,
+      tools: server.state.tools
+    }
   end
 
   # -- Step completion --
@@ -390,7 +384,7 @@ defmodule Omni.Agent.Server do
   # -- Tool decision phase --
 
   defp handle_tool_decision_phase(tool_uses, server) do
-    tool_map = build_tool_map(server.state.context.tools)
+    tool_map = build_tool_map(server.state.tools)
 
     %{server | tool_map: tool_map, remaining_uses: tool_uses, approved_uses: []}
     |> process_next_tool_decision()
@@ -545,9 +539,8 @@ defmodule Omni.Agent.Server do
   end
 
   defp complete_turn(_response, server) do
-    context = server.state.context
-    new_context = %{context | messages: context.messages ++ server.pending_messages}
-    server = %{server | state: %{server.state | context: new_context}}
+    new_messages = server.state.messages ++ server.pending_messages
+    server = %{server | state: %{server.state | messages: new_messages}}
 
     response = build_turn_response(server)
     server = reset_turn(server)
@@ -607,6 +600,7 @@ defmodule Omni.Agent.Server do
 
   defp apply_set_state(state, opts) do
     with :ok <- validate_set_state_keys(opts),
+         :ok <- validate_set_state_messages(opts),
          {:ok, state} <- maybe_resolve_model(state, opts) do
       state =
         Enum.reduce(opts, state, fn
@@ -617,6 +611,16 @@ defmodule Omni.Agent.Server do
       {:ok, state}
     end
   end
+
+  defp validate_set_state_messages(opts) do
+    case Keyword.fetch(opts, :messages) do
+      {:ok, messages} -> State.validate_messages(messages)
+      :error -> :ok
+    end
+  end
+
+  defp maybe_validate_field(:messages, value), do: State.validate_messages(value)
+  defp maybe_validate_field(_field, _value), do: :ok
 
   defp validate_set_state_keys(opts) do
     case Enum.find(opts, fn {key, _} -> key not in @settable_fields end) do
@@ -688,8 +692,8 @@ defmodule Omni.Agent.Server do
 
   # -- Callback dispatch --
 
-  defp call_init(nil, _opts), do: {:ok, %{}}
-  defp call_init(module, opts), do: module.init(opts)
+  defp call_init(nil, state), do: {:ok, state}
+  defp call_init(module, state), do: module.init(state)
 
   defp call_handle_turn(nil, _response, state), do: {:stop, state}
   defp call_handle_turn(module, response, state), do: module.handle_turn(response, state)

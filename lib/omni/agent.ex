@@ -31,14 +31,20 @@ defmodule Omni.Agent do
   ## Custom agents
 
   Define a module with `use Omni.Agent` to customize behaviour through
-  lifecycle callbacks. All callbacks are optional with sensible defaults:
+  lifecycle callbacks. All callbacks are optional with sensible defaults.
 
-      defmodule MyAgent do
+  `init/1` receives the fully-resolved initial `%State{}` and returns a
+  possibly-modified state. Use it to bake in defaults (system prompt, tools)
+  or to customize the state based on per-invocation input passed via
+  `:private`:
+
+      defmodule GreeterAgent do
         use Omni.Agent
 
         @impl Omni.Agent
-        def init(opts) do
-          {:ok, %{user: opts[:user]}}
+        def init(state) do
+          system = "You are a helpful assistant. The user's name is \#{state.private.user}."
+          {:ok, %{state | system: system}}
         end
 
         @impl Omni.Agent
@@ -46,53 +52,51 @@ defmodule Omni.Agent do
           {:continue, "Continue where you left off.", state}
         end
 
-        def handle_turn(_response, state) do
-          {:stop, state}
-        end
+        def handle_turn(_response, state), do: {:stop, state}
       end
 
-      {:ok, agent} = MyAgent.start_link(
+      {:ok, agent} = GreeterAgent.start_link(
         model: {:anthropic, "claude-sonnet-4-5-20250514"},
-        system: "You are a helpful assistant.",
-        user: :current_user
+        private: %{user: "Alice"}
       )
 
-  Override `start_link/1` to bake in defaults — standard GenServer pattern:
+  For static defaults — system prompt, tools, inference opts — set them in
+  `init/1` directly rather than overriding `start_link/1`:
 
-      defmodule MyAgent do
+      defmodule ResearchAgent do
         use Omni.Agent
 
-        def start_link(opts \\\\ []) do
-          defaults = [
-            model: {:anthropic, "claude-sonnet-4-5-20250514"},
+        @impl Omni.Agent
+        def init(state) do
+          state = %{state |
             system: "You are a research assistant.",
             tools: [SearchTool.new(), FetchTool.new()]
-          ]
-          super(Keyword.merge(defaults, opts))
+          }
+          {:ok, state}
         end
       end
+
+      {:ok, agent} = ResearchAgent.start_link(
+        model: {:anthropic, "claude-sonnet-4-5-20250514"}
+      )
 
   ## Start options
 
   Options for `start_link/1` and `start_link/2`:
 
     * `:model` (required) — `{provider_id, model_id}` tuple or `%Model{}`
-    * `:context` — a `%Context{}` struct (system prompt, messages, tools).
-      Alternatively, pass individual keys:
-    * `:system` — system prompt string (convenience for `context.system`)
-    * `:tools` — list of `%Tool{}` structs (convenience for `context.tools`)
-    * `:messages` — list of `%Message{}` structs for session hydration
-      (convenience for `context.messages`)
-    * `:meta` — initial metadata map (user data for application use)
+    * `:system` — system prompt string
+    * `:messages` — initial `%Message{}` list. Must be empty or end with an
+      `:assistant` message containing no `%ToolUse{}` blocks
+    * `:tools` — list of `%Tool{}` structs
+    * `:private` — initial private map (runtime state visible in callbacks
+      via `state.private`)
     * `:listener` — pid to receive events (defaults to first `prompt/3` caller)
     * `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)
     * `:opts` — inference options passed to `stream_text` each step
       (`:temperature`, `:max_tokens`, `:max_steps`, etc.)
     * `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
       standard GenServer options
-
-  When both `:context` and individual keys are provided, `:context` takes
-  precedence.
 
   ## Events
 
@@ -127,10 +131,10 @@ defmodule Omni.Agent do
   turn boundaries — `:continue` when `handle_turn/2` returns
   `{:continue, ...}` (the agent is looping), `:stop` when `handle_turn/2`
   returns `{:stop, ...}` (the turn's messages are committed to
-  `context.messages`). `:stop`, `:continue`, and `:cancelled` all carry a
+  `state.messages`). `:stop`, `:continue`, and `:cancelled` all carry a
   `%Response{}` with `messages` — all messages accumulated during the turn.
   `:cancelled` fires after `cancel/1` with `stop_reason: :cancelled` —
-  pending messages are discarded (context unchanged). `:error` fires after
+  pending messages are discarded (`state.messages` unchanged). `:error` fires after
   `handle_error/2` returns `{:stop, state}` — pending messages are discarded
   and the agent goes idle. A simple chatbot (one step per prompt) sees only
   `:stop`.
@@ -193,32 +197,21 @@ defmodule Omni.Agent do
 
   The difference between a chatbot (one step per prompt) and an autonomous
   agent (works until done) is entirely in the callbacks. A completion tool
-  with a trivial handler serves as the signal:
-
-      task_complete = Omni.tool(
-        name: "task_complete",
-        description: "Call when the task is fully complete.",
-        input_schema: Omni.Schema.object(
-          %{result: Omni.Schema.string(description: "Summary of what was accomplished")},
-          required: [:result]
-        ),
-        handler: fn _input -> "OK" end
-      )
-
-  The agent loops until the model calls it:
+  with a trivial handler serves as the signal — the agent loops until the
+  model calls it:
 
       defmodule ResearchAgent do
         use Omni.Agent
 
-        def start_link(opts \\\\ []) do
-          defaults = [
-            model: {:anthropic, "claude-sonnet-4-5-20250514"},
+        @impl Omni.Agent
+        def init(state) do
+          state = %{state |
             system: "You are a research assistant. Use your tools to research, " <>
                     "then call task_complete with your findings.",
-            tools: [SearchTool.new(), FetchTool.new(), task_complete],
-            opts: [max_steps: 30]
-          ]
-          super(Keyword.merge(defaults, opts))
+            tools: [SearchTool.new(), FetchTool.new(), task_complete()],
+            opts: Keyword.put(state.opts, :max_steps, 30)
+          }
+          {:ok, state}
         end
 
         @impl Omni.Agent
@@ -232,6 +225,18 @@ defmodule Omni.Agent do
           else
             {:continue, "Continue working. Call task_complete when finished.", state}
           end
+        end
+
+        defp task_complete do
+          Omni.tool(
+            name: "task_complete",
+            description: "Call when the task is fully complete.",
+            input_schema: Omni.Schema.object(
+              %{result: Omni.Schema.string(description: "Summary of what was accomplished")},
+              required: [:result]
+            ),
+            handler: fn _input -> "OK" end
+          )
         end
 
         defp completion_tool_called?(response) do
@@ -302,16 +307,21 @@ defmodule Omni.Agent do
   @doc """
   Called when the agent starts.
 
-  Receives the full opts passed to `start_link` (including framework keys like
-  `:model` and `:system` — ignore what you don't need). Return `{:ok, private}`
-  to start with initial private state, or `{:error, reason}` to refuse startup.
+  Receives the fully-resolved initial `%State{}` (start options merged, model
+  resolved) and returns a possibly-modified state. The callback can tweak any
+  field — inject `:private`, preload `:messages`, swap the `:system` prompt,
+  add `:tools`.
 
-  Private state holds runtime data (PIDs, refs, closures) that persists across
-  callbacks and turns. Access via `state.private` in other callbacks.
+  The returned state is validated against the `:messages` invariant (empty or
+  ending with an `:assistant` message containing no `%ToolUse{}` blocks). An
+  invalid returned state causes `start_link` to fail with
+  `{:error, :invalid_messages}`.
 
-  Default: `{:ok, %{}}`.
+  Return `{:error, reason}` to refuse startup.
+
+  Default: `{:ok, state}` (identity).
   """
-  @callback init(opts :: keyword()) :: {:ok, private :: map()} | {:error, term()}
+  @callback init(state :: State.t()) :: {:ok, State.t()} | {:error, term()}
 
   @doc """
   Called when the model completes without executable tools.
@@ -408,7 +418,7 @@ defmodule Omni.Agent do
       @behaviour Omni.Agent
 
       @impl Omni.Agent
-      def init(_opts), do: {:ok, %{}}
+      def init(state), do: {:ok, state}
 
       @impl Omni.Agent
       def handle_turn(_response, state), do: {:stop, state}
@@ -435,8 +445,7 @@ defmodule Omni.Agent do
                      handle_tool_use: 2,
                      handle_tool_result: 2,
                      handle_error: 2,
-                     terminate: 2,
-                     start_link: 1
+                     terminate: 2
     end
   end
 
@@ -506,7 +515,7 @@ defmodule Omni.Agent do
 
   Kills any running tasks, discards pending messages, and emits
   `{:agent, pid, :cancelled, %Response{stop_reason: :cancelled}}`.
-  The agent's `context.messages` remains unchanged.
+  The agent's `state.messages` remains unchanged.
 
   Returns `{:error, :idle}` if the agent is already idle.
   """
@@ -532,9 +541,9 @@ defmodule Omni.Agent do
   With no key, returns the full `%State{}`. With a key, returns the value of
   that field (or `nil` for unknown keys).
 
-      Agent.get_state(agent)             #=> %State{model: ..., context: ..., ...}
+      Agent.get_state(agent)             #=> %State{model: ..., messages: [...], ...}
       Agent.get_state(agent, :status)    #=> :idle
-      Agent.get_state(agent, :context)   #=> %Context{}
+      Agent.get_state(agent, :messages)  #=> [%Message{}, ...]
       Agent.get_state(agent, :private)   #=> %{}
   """
   @spec get_state(GenServer.server()) :: State.t()
@@ -550,12 +559,18 @@ defmodule Omni.Agent do
 
     * `:model` — replace the model. Resolved via `Omni.get_model/2`.
       Fails with `{:error, {:model_not_found, ref}}` if not found
-    * `:context` — replace the context (system prompt, messages, tools)
+    * `:system` — replace the system prompt
+    * `:messages` — replace the committed message history. Must be empty or
+      end with an `:assistant` message containing no `%ToolUse{}` blocks;
+      otherwise fails with `{:error, :invalid_messages}`
+    * `:tools` — replace the tool list
     * `:opts` — replace inference opts
-    * `:meta` — replace meta map
 
-  All values are replaced, not merged. To merge opts or meta, use the
-  function form of `set_state/3`.
+  All values are replaced, not merged. To merge opts, use the function form
+  of `set_state/3`.
+
+  `:private` is not settable — callback modules own mutation via
+  `%{state | private: ...}`.
 
   Unrecognized keys return `{:error, {:invalid_key, key}}`.
   Returns `{:error, :running}` if the agent is running or paused.
@@ -572,12 +587,13 @@ defmodule Omni.Agent do
   When `value_or_fun` is a 1-arity function, calls it with the current
   value and uses the return as the new value.
 
-      Agent.set_state(agent, :context, fn ctx -> %{ctx | system: "Be concise."} end)
+      Agent.set_state(agent, :system, "Be concise.")
       Agent.set_state(agent, :opts, fn opts -> Keyword.merge(opts, temperature: 0.7) end)
-      Agent.set_state(agent, :meta, fn meta -> Map.put(meta, :title, "Chat") end)
+      Agent.set_state(agent, :tools, fn tools -> [new_tool | tools] end)
 
-  Settable fields: `:model`, `:context`, `:opts`, `:meta`.
+  Settable fields: `:model`, `:system`, `:messages`, `:tools`, `:opts`.
   Returns `{:error, {:invalid_field, field}}` for other fields.
+  Returns `{:error, :invalid_messages}` if `:messages` fails the invariant.
   Returns `{:error, :running}` if the agent is running or paused.
   """
   @spec set_state(GenServer.server(), atom(), term() | (term() -> term())) ::

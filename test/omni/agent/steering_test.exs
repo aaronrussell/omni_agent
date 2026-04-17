@@ -96,7 +96,7 @@ defmodule Omni.Agent.SteeringTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # Context should have messages from two turns
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       # First user + assistant + second user + assistant = 4
       assert length(messages) == 4
     end
@@ -149,7 +149,7 @@ defmodule Omni.Agent.SteeringTest do
       assert {:cancelled, %Response{stop_reason: :cancelled}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Cancel discards pending messages, context stays empty
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :messages) == []
     end
 
     test "cancel while idle returns error" do
@@ -222,7 +222,7 @@ defmodule Omni.Agent.SteeringTest do
       assert {:stop, %Response{}} = List.last(events)
 
       # Verify the staged prompt made it into context
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       user_contents = for %{role: :user} = msg <- messages, do: msg
       # Should have "Start" and "Redirect!" as user messages (not "Continue.")
       assert length(user_contents) >= 2
@@ -251,7 +251,7 @@ defmodule Omni.Agent.SteeringTest do
       # Should complete with :stop (max_steps forces stop, staged prompt ignored)
       assert {:stop, %Response{}} = List.last(events)
       # Only 1 turn worth of messages (user + assistant = 2)
-      assert length(Agent.get_state(agent, :context).messages) == 2
+      assert length(Agent.get_state(agent, :messages)) == 2
     end
   end
 end

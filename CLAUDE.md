@@ -61,14 +61,14 @@ The agent GenServer never blocks on IO. All blocking work is delegated to spawne
 
 Agent state is split into two structs:
 
-- **`Omni.Agent.State`** — the public struct passed to all callbacks. Contains `model`, `context`, `opts`, `meta`, `private`, `status`, `step`.
+- **`Omni.Agent.State`** — the public struct passed to all callbacks. Contains `model`, `system`, `messages`, `tools`, `opts`, `private`, `status`, `step`.
 - **`Omni.Agent.Server`** (internal) — wraps `State` and adds GenServer machinery: task refs, pending messages/usage, tool decision state, staged prompts. Never exposed to callbacks.
 
-### Context and pending messages
+### State and pending messages
 
-The agent holds a `%Context{}` (from `omni`) containing the system prompt, committed messages, and tools. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `pending_messages` (internal server state). LLM requests see `context.messages ++ pending_messages`. On `{:stop, ...}`, pending messages are committed to `context.messages`. On cancel or error, they're discarded.
+Messages live directly on `state.messages`. The agent rebuilds a `%Context{system, messages, tools}` on each call to `Omni.stream_text/3` internally. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `pending_messages` (internal server state). LLM requests see `state.messages ++ pending_messages`. On `{:stop, ...}`, pending messages are committed to `state.messages`. On cancel or error, they're discarded.
 
-This design means the context is always in a valid state — no trailing user messages after cancel/error. The application can use `set_state/2,3` to update the context (swap messages for navigation, hydrate a session, etc.) when the agent is idle.
+This design means `state.messages` is always in a valid state — no trailing user messages after cancel/error. The application can use `set_state/2,3` to update fields (swap messages for navigation, hydrate a session, etc.) when the agent is idle. `set_state(:messages, ...)` validates the list ends with an `:assistant` message containing no `ToolUse` blocks (or is empty).
 
 ### Agent loop
 
@@ -106,7 +106,7 @@ lib/omni/
 - The term is "tool use", not "tool call" (aligns with Anthropic's API, consistent with `omni`).
 - Agent statuses: `:idle`, `:running`, `:paused`. Status determines which API calls are valid.
 - All callbacks are optional with `defoverridable` defaults. Users implement only what they need.
-- `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:context`, `:opts`, `:meta`.
+- `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:system`, `:messages`, `:tools`, `:opts`. `:private` is not settable — callback modules own mutation.
 - `:step` events carry the per-step `%Response{}` from each LLM request. `:stop`, `:continue`, and `:cancelled` events carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
 - The agent has no `session_id` or built-in persistence — session identity and storage are application concerns. The `{:stop, response}` event carries enough context (`messages`, `usage`) for external listeners to persist.
 - `prompt/3` behaviour depends on status: idle → start turn, running/paused → stage for next turn boundary (steering).

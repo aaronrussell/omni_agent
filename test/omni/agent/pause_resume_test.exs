@@ -89,7 +89,7 @@ defmodule Omni.Agent.PauseResumeTest do
       assert {:cancelled, %Response{stop_reason: :cancelled}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Cancel discards pending messages, context stays empty
-      assert Agent.get_state(agent, :context).messages == []
+      assert Agent.get_state(agent, :messages) == []
     end
 
     test "multiple tools: pause on first, approve, remaining processed normally" do

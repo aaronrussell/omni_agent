@@ -5,14 +5,17 @@ defmodule Omni.Agent.TestAgents do
     use Omni.Agent
 
     @impl Omni.Agent
-    def init(opts), do: {:ok, %{name: opts[:agent_name] || "default"}}
+    def init(state) do
+      name = state.private[:agent_name] || "default"
+      {:ok, %{state | private: Map.put(state.private, :name, name)}}
+    end
   end
 
   defmodule FailInit do
     use Omni.Agent
 
     @impl Omni.Agent
-    def init(_opts), do: {:error, :bad_config}
+    def init(_state), do: {:error, :bad_config}
   end
 
   defmodule CustomTurn do
@@ -60,7 +63,9 @@ defmodule Omni.Agent.TestAgents do
     use Omni.Agent
 
     @impl Omni.Agent
-    def init(_opts), do: {:ok, %{turn_count: 0}}
+    def init(state) do
+      {:ok, %{state | private: Map.put(state.private, :turn_count, 0)}}
+    end
 
     @impl Omni.Agent
     def handle_turn(_response, state) do
@@ -79,7 +84,9 @@ defmodule Omni.Agent.TestAgents do
     use Omni.Agent
 
     @impl Omni.Agent
-    def init(_opts), do: {:ok, %{retries: 0}}
+    def init(state) do
+      {:ok, %{state | private: Map.put(state.private, :retries, 0)}}
+    end
 
     @impl Omni.Agent
     def handle_error(_error, state) do
@@ -98,9 +105,6 @@ defmodule Omni.Agent.TestAgents do
     use Omni.Agent
 
     @impl Omni.Agent
-    def init(opts), do: {:ok, opts[:private] || %{}}
-
-    @impl Omni.Agent
     def terminate(reason, state) do
       if pid = state.private[:test_pid] do
         send(pid, {:terminated, reason})
@@ -112,7 +116,9 @@ defmodule Omni.Agent.TestAgents do
     use Omni.Agent
 
     @impl Omni.Agent
-    def init(_opts), do: {:ok, %{retries: 0}}
+    def init(state) do
+      {:ok, %{state | private: Map.put(state.private, :retries, 0)}}
+    end
 
     @impl Omni.Agent
     def handle_error({:step_crashed, _} = _error, state) do

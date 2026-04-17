@@ -30,7 +30,7 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       _events = collect_events(agent)
 
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       # Initial user + assistant, then 2 more (user continue + assistant) per extra turn
       # = 2 + 2 + 2 = 6 messages
       assert length(messages) == 6
@@ -70,7 +70,7 @@ defmodule Omni.Agent.ContinuationTest do
       assert Agent.get_state(agent, :status) == :idle
 
       # Context should be committed (includes tool result messages)
-      messages = Agent.get_state(agent, :context).messages
+      messages = Agent.get_state(agent, :messages)
       assert length(messages) > 0
     end
   end
