@@ -2,14 +2,14 @@ defmodule Omni.Agent.PromptTest do
   use Omni.Agent.AgentCase, async: true
 
   describe "basic prompt/response" do
-    test "streams text events and emits :stop with a valid response" do
+    test "streams text events and emits :turn {:stop, _} with a valid response" do
       {:ok, agent} = start_agent()
       :ok = Agent.prompt(agent, "Hello!")
 
       events = collect_events(agent)
       text_events = for {:text_delta, _data} <- events, do: :ok
       assert length(text_events) > 0
-      assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
   end
 
@@ -19,7 +19,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "Hello!")
 
       events = collect_events(agent)
-      assert {:stop, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
   end
 
@@ -32,7 +32,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "Hello!")
 
       events = collect_events(agent)
-      assert {:stop, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
   end
 
@@ -42,7 +42,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
-      assert {:stop, %Response{} = resp} = List.last(events)
+      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
       assert length(resp.messages) > 0
       assert resp.usage.total_tokens > 0
     end
@@ -57,7 +57,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "Second")
       events = collect_events(agent)
 
-      assert {:stop, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
 
       # After two turns, context should have 4 messages
       assert length(Agent.get_state(agent, :messages)) == 4
@@ -113,7 +113,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, content)
       events = collect_events(agent)
 
-      assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
       messages = Agent.get_state(agent, :messages)
       assert length(messages) == 2
 
@@ -130,7 +130,7 @@ defmodule Omni.Agent.PromptTest do
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
-      assert {:stop, %Response{} = resp} = List.last(events)
+      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
       assert length(resp.messages) == 2
 
       [user_msg, assistant_msg] = resp.messages
@@ -166,7 +166,7 @@ defmodule Omni.Agent.PromptTest do
       assert :thinking_start in event_types
       assert :thinking_delta in event_types
       assert :thinking_end in event_types
-      assert {:stop, %Response{}} = List.last(events)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
   end
 end

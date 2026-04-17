@@ -44,7 +44,7 @@ shape.
 
 ## Phase 2 — Agent: event model
 
-**Status:** Not started.
+**Status:** Done.
 
 **Spec:** `context/agent-redesign.md` (Events, Turn lifecycle).
 

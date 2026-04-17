@@ -11,11 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Flat `%Omni.Agent.State{}`** — nested `%Context{}` replaced with top-level `:system`, `:messages`, `:tools` fields. `:meta` removed (deferred to future `Omni.Session`).
 - **`init/1` shape** — now receives the fully-resolved `%State{}` and returns `{:ok, state} | {:error, term}`, enabling callbacks to set any field (including defaults for `:system`, `:tools`, etc.). The old opts-in/private-out shape is gone.
 - **`set_state` keys** — settable fields are now `:model`, `:system`, `:messages`, `:tools`, `:opts`. `:context` and `:meta` are gone; `:private` remains callback-owned.
+- **`:stop` and `:continue` events collapsed into `:turn`** — now `{:agent, pid, :turn, {:stop, response}}` and `{:agent, pid, :turn, {:continue, response}}`. Both variants commit pending messages to `state.messages`, so every segment boundary is a real commit point.
+- **Per-step / per-segment response messages** — `:step.response.messages` contains only that step's messages (assistant, plus preceding tool-result user message when applicable). `:turn.response.messages` contains only that segment's committed messages, not the whole turn's.
 
 ### Added
 
 - **`:private` start option** — initial private map, previously only settable via `init/1`.
 - **Messages invariant** — `set_state(:messages, ...)` and the state returned from `init/1` are validated to be empty or end with an `:assistant` message containing no `%ToolUse{}` blocks. Violations return `{:error, :invalid_messages}`.
+- **`:message` event** — `{:agent, pid, :message, %Message{}}` emitted each time a message is appended to pending: the initial user message, each assistant response after streaming, the tool-result user message, and the continuation user message. Fires after the streaming deltas for that message.
+- **`:state` event** — `{:agent, pid, :state, %State{}}` emitted after every successful `set_state/2,3` call, carrying the full new state.
 
 ## [0.2.0] - 2026-04-02
 

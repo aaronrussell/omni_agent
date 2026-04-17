@@ -34,7 +34,7 @@ defmodule Omni.Agent.ErrorTest do
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
-      assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
       assert Agent.get_state(agent, :private).retries == 1
     end
 
@@ -199,7 +199,7 @@ defmodule Omni.Agent.ErrorTest do
       :ok = Agent.prompt(agent, "Try again!")
       events = collect_events(agent)
 
-      assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
       assert Agent.get_state(agent, :status) == :idle
       # Only the successful turn's messages
       assert length(Agent.get_state(agent, :messages)) == 2
@@ -225,7 +225,7 @@ defmodule Omni.Agent.ErrorTest do
       retry_events = for {:retry, _data} <- events, do: :ok
       assert length(retry_events) == 1
 
-      assert {:stop, %Response{stop_reason: :stop}} = List.last(events)
+      assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
 
       # Context should have committed messages from the successful turn
       messages = Agent.get_state(agent, :messages)

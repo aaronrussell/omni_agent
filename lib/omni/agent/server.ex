@@ -1,7 +1,7 @@
 defmodule Omni.Agent.Server do
   @moduledoc false
 
-  # Lifecycle: turn > step
+  # Lifecycle: turn > segment > step
   #
   #   prompt/3 ──► TURN START
   #   │
@@ -10,8 +10,11 @@ defmodule Omni.Agent.Server do
   #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete ──► :step event
   #   │   └─ tool_use? ──► ...repeat...
   #   └─ evaluate_head ──► assistant (no tools) ──► finalize_turn ──► handle_turn
-  #       ├─ {:continue, prompt} ──► :continue event ──► new step(s)
-  #       └─ {:stop, state} ──► complete_turn ──► :stop event ──► TURN END
+  #       ├─ {:continue, prompt} ──► :turn {:continue, _} ──► new segment
+  #       └─ {:stop, state}       ──► :turn {:stop, _}     ──► TURN END
+  #
+  # Commit happens on every :turn event — both variants flush pending_messages
+  # into state.messages. A segment is the span of pending between commits.
 
   use GenServer
 
@@ -29,12 +32,16 @@ defmodule Omni.Agent.Server do
     :tool_timeout,
 
     # Turn lifecycle (set when a prompt starts, cleared by reset_turn)
-    # pending_messages: messages accumulated during the current turn
+    # pending_messages: messages accumulated in the current segment (committed
+    #   on every :turn event, cleared between segments)
+    # step_messages: messages added since the last :step emission; used as
+    #   :step.response.messages (assistant + any preceding tool-result user)
     # pending_usage: accumulated usage for the current turn across all steps
     # prompt_opts: merged opts for the current turn (state.opts + call-site opts)
     # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
     #   while running/paused
     pending_messages: [],
+    step_messages: [],
     pending_usage: %Usage{},
     prompt_opts: [],
     next_prompt: nil,
@@ -186,8 +193,13 @@ defmodule Omni.Agent.Server do
         %__MODULE__{state: %{status: :idle}} = server
       ) do
     case apply_set_state(server.state, opts) do
-      {:ok, new_state} -> {:reply, :ok, %{server | state: new_state}}
-      {:error, _} = error -> {:reply, error, server}
+      {:ok, new_state} ->
+        server = %{server | state: new_state}
+        notify(server, :state, new_state)
+        {:reply, :ok, server}
+
+      {:error, _} = error ->
+        {:reply, error, server}
     end
   end
 
@@ -206,7 +218,10 @@ defmodule Omni.Agent.Server do
 
     with {:ok, resolved} <- maybe_resolve_field(field, new_value),
          :ok <- maybe_validate_field(field, resolved) do
-      {:reply, :ok, %{server | state: Map.put(server.state, field, resolved)}}
+      new_state = Map.put(server.state, field, resolved)
+      server = %{server | state: new_state}
+      notify(server, :state, new_state)
+      {:reply, :ok, server}
     else
       {:error, _} = error -> {:reply, error, server}
     end
@@ -313,6 +328,7 @@ defmodule Omni.Agent.Server do
         pending_messages: [user_message],
         prompt_opts: prompt_opts
     }
+    |> tap(&notify(&1, :message, user_message))
     |> evaluate_head()
   end
 
@@ -368,17 +384,20 @@ defmodule Omni.Agent.Server do
 
   defp handle_step_complete(response, server) do
     pending_usage = Usage.add(server.pending_usage, response.usage)
+    step_messages = server.step_messages ++ [response.message]
 
     server = %{
       server
       | pending_messages: server.pending_messages ++ [response.message],
+        step_messages: step_messages,
         step_task: nil,
         last_response: response,
         pending_usage: pending_usage
     }
 
-    notify(server, :step, response)
-    evaluate_head(server)
+    notify(server, :message, response.message)
+    notify(server, :step, %{response | messages: step_messages})
+    evaluate_head(%{server | step_messages: []})
   end
 
   # -- Tool decision phase --
@@ -486,8 +505,14 @@ defmodule Omni.Agent.Server do
 
     # Build user message with all tool results, append to pending
     user_message = Message.new(role: :user, content: final_results)
-    server = %{server | pending_messages: server.pending_messages ++ [user_message]}
 
+    server = %{
+      server
+      | pending_messages: server.pending_messages ++ [user_message],
+        step_messages: server.step_messages ++ [user_message]
+    }
+
+    notify(server, :message, user_message)
     evaluate_head(server)
   end
 
@@ -529,23 +554,32 @@ defmodule Omni.Agent.Server do
   end
 
   defp continue_turn(prompt, server) do
-    response = build_turn_response(server)
-    notify(server, :continue, response)
+    {segment, server} = commit_segment(server)
+    response = build_turn_response(server, segment)
+    notify(server, :turn, {:continue, response})
 
     user_message = Message.new(role: :user, content: prompt)
-    server = %{server | pending_messages: server.pending_messages ++ [user_message]}
-
+    server = %{server | pending_messages: [user_message], step_messages: []}
+    notify(server, :message, user_message)
     evaluate_head(server)
   end
 
   defp complete_turn(_response, server) do
-    new_messages = server.state.messages ++ server.pending_messages
-    server = %{server | state: %{server.state | messages: new_messages}}
-
-    response = build_turn_response(server)
+    {segment, server} = commit_segment(server)
+    response = build_turn_response(server, segment)
     server = reset_turn(server)
-    notify(server, :stop, response)
+    notify(server, :turn, {:stop, response})
     server
+  end
+
+  # Flushes the current segment (pending_messages) into state.messages and
+  # returns the flushed slice alongside the updated server. pending_messages
+  # is cleared so the next segment starts empty.
+  defp commit_segment(server) do
+    segment = server.pending_messages
+    new_messages = server.state.messages ++ segment
+    server = %{server | state: %{server.state | messages: new_messages}, pending_messages: []}
+    {segment, server}
   end
 
   # -- Cancel --
@@ -565,13 +599,13 @@ defmodule Omni.Agent.Server do
 
   # -- Response builders --
 
-  defp build_turn_response(server) do
-    last_assistant = find_last_assistant(server.pending_messages)
+  defp build_turn_response(server, segment_messages) do
+    last_assistant = find_last_assistant(segment_messages)
 
     %Response{
       model: server.state.model,
       message: last_assistant,
-      messages: server.pending_messages,
+      messages: segment_messages,
       output: if(server.last_response, do: server.last_response.output),
       stop_reason: if(server.last_response, do: server.last_response.stop_reason, else: :stop),
       usage: server.pending_usage
@@ -658,6 +692,7 @@ defmodule Omni.Agent.Server do
       server
       | state: %{server.state | status: :idle, step: 0},
         pending_messages: [],
+        step_messages: [],
         pending_usage: %Usage{},
         step_task: nil,
         executor_task: nil,
