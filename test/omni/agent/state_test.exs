@@ -250,44 +250,6 @@ defmodule Omni.Agent.StateTest do
     end
   end
 
-  describe "listen/2" do
-    test "returns error when running" do
-      stub_name = unique_stub_name()
-      stub_slow(stub_name, @text_fixture)
-
-      {:ok, agent} =
-        Agent.start_link(
-          model: model(),
-          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
-        )
-
-      :ok = Agent.prompt(agent, "Hello!")
-      Process.sleep(50)
-      assert {:error, :running} = Agent.listen(agent, self())
-      Agent.cancel(agent)
-      _events = collect_events(agent, 2000)
-    end
-
-    test "returns error when paused" do
-      {:ok, agent} =
-        start_agent_with_module(PauseAgent,
-          tools: [tool_with_handler()],
-          fixture: @tool_use_fixture,
-          listener: self()
-        )
-
-      :ok = Agent.prompt(agent, "Use the tool")
-      events = collect_events(agent)
-      assert {:pause, {:authorize, %ToolUse{}}} = List.last(events)
-
-      assert {:error, :running} = Agent.listen(agent, self())
-
-      # Clean up
-      Agent.cancel(agent)
-      _events = collect_events(agent, 2000)
-    end
-  end
-
   describe "step counter" do
     test "resets to 0 after turn completes" do
       {:ok, agent} = start_agent()

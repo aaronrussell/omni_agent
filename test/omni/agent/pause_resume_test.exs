@@ -6,8 +6,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixture: @tool_use_fixture,
-          listener: self()
+          fixture: @tool_use_fixture
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -28,8 +27,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -49,8 +47,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -76,8 +73,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixture: @tool_use_fixture,
-          listener: self()
+          fixture: @tool_use_fixture
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -98,8 +94,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")
@@ -118,8 +113,7 @@ defmodule Omni.Agent.PauseResumeTest do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Use the tool")

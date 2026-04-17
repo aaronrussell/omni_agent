@@ -8,7 +8,8 @@ defmodule Omni.Agent.Step do
 
   The step process sends ref-tagged messages back to the parent:
 
-    - `{ref, {:event, type, event_map}}` — streaming events to forward
+    - `{ref, {:event, type, event_map, partial}}` — streaming events to
+      forward, with the partial `%Response{}` after applying this event
     - `{ref, {:complete, %Response{}}}` — successful completion
     - `{ref, {:error, reason}}` — failure
 
@@ -31,8 +32,8 @@ defmodule Omni.Agent.Step do
               {:error, reason, _response}, _acc ->
                 throw({:stream_error, reason})
 
-              {type, event_map, _partial_response}, _acc ->
-                send(parent, {ref, {:event, type, event_map}})
+              {type, event_map, partial_response}, _acc ->
+                send(parent, {ref, {:event, type, event_map, partial_response}})
                 nil
             end)
 

@@ -6,7 +6,7 @@ defmodule Omni.Agent.EventsTest do
 
   describe ":message event ordering — text-only turn" do
     test "fires for user and assistant, before :step and :turn" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -38,7 +38,7 @@ defmodule Omni.Agent.EventsTest do
     end
 
     test ":message payload is a fully-formed Message" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
@@ -58,8 +58,7 @@ defmodule Omni.Agent.EventsTest do
       {:ok, agent} =
         start_agent(
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "What's the weather?")
@@ -88,22 +87,21 @@ defmodule Omni.Agent.EventsTest do
   end
 
   describe ":step response.messages — per-step semantics" do
-    test "first step carries only the assistant message" do
-      {:ok, agent} = start_agent(listener: self())
+    test "first step carries the initial user prompt and the assistant response" do
+      {:ok, agent} = start_agent()
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
       [step_response] = for {:step, resp} <- events, do: resp
-      assert length(step_response.messages) == 1
-      assert [%Message{role: :assistant}] = step_response.messages
+      assert length(step_response.messages) == 2
+      assert [%Message{role: :user}, %Message{role: :assistant}] = step_response.messages
     end
 
     test "post-tool step carries preceding tool-result user plus assistant" do
       {:ok, agent} =
         start_agent(
           tools: [tool_with_handler()],
-          fixtures: [@tool_use_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@tool_use_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "What's the weather?")
@@ -111,9 +109,12 @@ defmodule Omni.Agent.EventsTest do
 
       [step1, step2] = for {:step, resp} <- events, do: resp
 
-      # Step 1: just the assistant (with tool_use blocks)
-      assert length(step1.messages) == 1
-      assert [%Message{role: :assistant, content: content}] = step1.messages
+      # Step 1: initial user prompt + assistant (with tool_use blocks)
+      assert length(step1.messages) == 2
+
+      assert [%Message{role: :user}, %Message{role: :assistant, content: content}] =
+               step1.messages
+
       assert Enum.any?(content, &match?(%ToolUse{}, &1))
 
       # Step 2: tool-result user message + assistant response
@@ -124,7 +125,7 @@ defmodule Omni.Agent.EventsTest do
 
   describe ":turn response.messages — per-segment semantics" do
     test "single-segment turn carries the whole segment" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
@@ -136,8 +137,7 @@ defmodule Omni.Agent.EventsTest do
     test "continuation turn emits one :turn per segment, each carrying only its own segment" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
-          fixtures: [@text_fixture, @text_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@text_fixture, @text_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Start")
@@ -173,7 +173,7 @@ defmodule Omni.Agent.EventsTest do
       {:ok, agent} =
         ContinueAgent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -202,7 +202,7 @@ defmodule Omni.Agent.EventsTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -226,7 +226,7 @@ defmodule Omni.Agent.EventsTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -241,7 +241,7 @@ defmodule Omni.Agent.EventsTest do
 
   describe ":state event" do
     test "fires on successful set_state/2 with full new state" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       # Drain any startup chatter (no events expected but be safe).
       Process.sleep(10)
 
@@ -252,7 +252,7 @@ defmodule Omni.Agent.EventsTest do
     end
 
     test "fires on successful set_state/3" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       Process.sleep(10)
 
       :ok = Agent.set_state(agent, :tools, [:fake_tool])
@@ -261,7 +261,7 @@ defmodule Omni.Agent.EventsTest do
     end
 
     test "emits once per successful call" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       Process.sleep(10)
 
       :ok = Agent.set_state(agent, system: "A")
@@ -273,7 +273,7 @@ defmodule Omni.Agent.EventsTest do
     end
 
     test "does not fire on failed set_state (:invalid_messages)" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       Process.sleep(10)
 
       # Ends with a user message — violates the messages invariant.
@@ -284,7 +284,7 @@ defmodule Omni.Agent.EventsTest do
     end
 
     test "does not fire on failed set_state (:invalid_key)" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       Process.sleep(10)
 
       assert {:error, {:invalid_key, :private}} = Agent.set_state(agent, private: %{})
@@ -292,7 +292,7 @@ defmodule Omni.Agent.EventsTest do
     end
 
     test "does not fire on failed set_state/3 (:invalid_field)" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
       Process.sleep(10)
 
       assert {:error, {:invalid_field, :status}} = Agent.set_state(agent, :status, :running)

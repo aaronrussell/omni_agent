@@ -13,29 +13,6 @@ defmodule Omni.Agent.PromptTest do
     end
   end
 
-  describe "auto listener" do
-    test "first prompt caller becomes listener automatically" do
-      {:ok, agent} = start_agent()
-      :ok = Agent.prompt(agent, "Hello!")
-
-      events = collect_events(agent)
-      assert {:turn, {:stop, %Response{}}} = List.last(events)
-    end
-  end
-
-  describe "explicit listener" do
-    test "events go to the listener process" do
-      {:ok, agent} = start_agent()
-
-      test_pid = self()
-      :ok = Agent.listen(agent, test_pid)
-      :ok = Agent.prompt(agent, "Hello!")
-
-      events = collect_events(agent)
-      assert {:turn, {:stop, %Response{}}} = List.last(events)
-    end
-  end
-
   describe "turn events" do
     test "turn event has response with correct data" do
       {:ok, agent} = start_agent()
@@ -91,7 +68,8 @@ defmodule Omni.Agent.PromptTest do
       {:ok, agent2} =
         Agent.start_link(
           model: model(),
-          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
+          opts: [api_key: "test-key", plug: {Req.Test, stub_name}],
+          subscribe: true
         )
 
       :ok = Agent.prompt(agent2, "First")
@@ -125,7 +103,7 @@ defmodule Omni.Agent.PromptTest do
 
   describe "turn response content" do
     test "contains expected user and assistant messages" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -141,7 +119,7 @@ defmodule Omni.Agent.PromptTest do
 
   describe "streaming events" do
     test "includes text_start and text_end events" do
-      {:ok, agent} = start_agent(listener: self())
+      {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -152,12 +130,8 @@ defmodule Omni.Agent.PromptTest do
       assert :text_delta in event_types
     end
 
-    test "thinking events pass through to listener" do
-      {:ok, agent} =
-        start_agent(
-          fixture: @thinking_fixture,
-          listener: self()
-        )
+    test "thinking events pass through to subscribers" do
+      {:ok, agent} = start_agent(fixture: @thinking_fixture)
 
       :ok = Agent.prompt(agent, "Think about this")
       events = collect_events(agent)

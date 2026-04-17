@@ -13,13 +13,13 @@ defmodule Omni.Agent.Server do
   #       ├─ {:continue, prompt} ──► :turn {:continue, _} ──► new segment
   #       └─ {:stop, state}       ──► :turn {:stop, _}     ──► TURN END
   #
-  # Commit happens on every :turn event — both variants flush pending_messages
-  # into state.messages. A segment is the span of pending between commits.
+  # Commit happens on every :turn event — both variants flush turn_messages
+  # into state.messages. A segment is the span of turn_messages between commits.
 
   use GenServer
 
   alias Omni.{Context, Message, Model, Response, Tool, Usage}
-  alias Omni.Agent.State
+  alias Omni.Agent.{Snapshot, State}
   alias Omni.Content.{ToolResult, ToolUse}
 
   defstruct [
@@ -28,24 +28,38 @@ defmodule Omni.Agent.Server do
 
     # Configuration (set at init, stable across turns)
     :module,
-    :listener,
     :tool_timeout,
 
-    # Turn lifecycle (set when a prompt starts, cleared by reset_turn)
-    # pending_messages: messages accumulated in the current segment (committed
-    #   on every :turn event, cleared between segments)
-    # step_messages: messages added since the last :step emission; used as
-    #   :step.response.messages (assistant + any preceding tool-result user)
-    # pending_usage: accumulated usage for the current turn across all steps
-    # prompt_opts: merged opts for the current turn (state.opts + call-site opts)
+    # Pub/sub
+    # subscribers: MapSet of pids receiving events
+    # monitors: %{ref => pid} — demonitor by ref, remove pid on :DOWN
+    subscribers: MapSet.new(),
+    monitors: %{},
+
+    # Turn lifecycle (set when a prompt starts, cleared by reset_turn).
+    #
+    # Naming mirrors the event hierarchy: :message < :step < :turn.
+    #
+    # turn_messages: messages accumulated in the current segment (committed
+    #   on every :turn event, cleared between segments). A segment is
+    #   always 2n messages — user/assistant pairs.
+    # turn_usage: accumulated usage for the current turn across all steps.
+    # step_message: the current step's user message (initial prompt, a
+    #   continuation prompt, or the tool-result user message). Paired with
+    #   the assistant response when emitting :step so :step.response.messages
+    #   is always [user, assistant].
+    # prompt_opts: merged opts for the current turn (state.opts + call-site opts).
     # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
-    #   while running/paused
-    pending_messages: [],
-    step_messages: [],
-    pending_usage: %Usage{},
+    #   while running/paused.
+    # partial_message: current streaming assistant message, or nil. Updated
+    #   from Step events; cleared on :message emission and reset_turn.
+    turn_messages: [],
+    turn_usage: %Usage{},
+    step_message: nil,
     prompt_opts: [],
     next_prompt: nil,
     last_response: nil,
+    partial_message: nil,
 
     # Process tracking
     step_task: nil,
@@ -83,17 +97,31 @@ defmodule Omni.Agent.Server do
          initial_state = build_initial_state(model, opts),
          {:ok, %State{} = state} <- call_init(module, initial_state),
          :ok <- State.validate_messages(state.messages) do
-      server = %__MODULE__{
-        state: state,
-        module: module,
-        listener: opts[:listener],
-        tool_timeout: Keyword.get(opts, :tool_timeout, 5_000)
-      }
+      caller = hd(callers)
+
+      initial_subs =
+        List.wrap(opts[:subscribers]) ++
+          if(opts[:subscribe], do: [caller], else: [])
+
+      server =
+        %__MODULE__{
+          state: state,
+          module: module,
+          tool_timeout: Keyword.get(opts, :tool_timeout, 5_000)
+        }
+        |> add_initial_subscribers(initial_subs)
 
       {:ok, server}
     else
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  defp add_initial_subscribers(server, pids) do
+    Enum.reduce(pids, server, fn pid, acc when is_pid(pid) ->
+      {acc, _snapshot} = subscribe_pid(acc, pid)
+      acc
+    end)
   end
 
   defp resolve_model({provider_id, model_id}), do: Model.get(provider_id, model_id)
@@ -116,10 +144,9 @@ defmodule Omni.Agent.Server do
   @impl GenServer
   def handle_call(
         {:prompt, content, opts},
-        {from_pid, _},
+        _from,
         %__MODULE__{state: %{status: :idle}} = server
       ) do
-    server = if server.listener == nil, do: %{server | listener: from_pid}, else: server
     server = start_turn(content, opts, server)
     {:reply, :ok, server}
   end
@@ -181,8 +208,28 @@ defmodule Omni.Agent.Server do
     {:reply, {:error, :idle}, server}
   end
 
-  def handle_call({:listen, pid}, _from, %__MODULE__{state: %{status: :idle}} = server) do
-    {:reply, :ok, %{server | listener: pid}}
+  # -- Subscribe / snapshot --
+
+  def handle_call(:subscribe, {pid, _}, server) do
+    {server, snapshot} = subscribe_pid(server, pid)
+    {:reply, {:ok, snapshot}, server}
+  end
+
+  def handle_call({:subscribe, pid}, _from, server) when is_pid(pid) do
+    {server, snapshot} = subscribe_pid(server, pid)
+    {:reply, {:ok, snapshot}, server}
+  end
+
+  def handle_call(:unsubscribe, {pid, _}, server) do
+    {:reply, :ok, unsubscribe_pid(server, pid)}
+  end
+
+  def handle_call({:unsubscribe, pid}, _from, server) when is_pid(pid) do
+    {:reply, :ok, unsubscribe_pid(server, pid)}
+  end
+
+  def handle_call(:get_snapshot, _from, server) do
+    {:reply, build_snapshot(server), server}
   end
 
   # -- set_state/2 --
@@ -236,7 +283,6 @@ defmodule Omni.Agent.Server do
   end
 
   # Catch-all for mutating ops while running or paused
-  def handle_call({:listen, _}, _from, server), do: {:reply, {:error, :running}, server}
   def handle_call({:set_state, _}, _from, server), do: {:reply, {:error, :running}, server}
   def handle_call({:set_state, _, _}, _from, server), do: {:reply, {:error, :running}, server}
 
@@ -248,7 +294,8 @@ defmodule Omni.Agent.Server do
   # -- Info (step messages) --
 
   @impl GenServer
-  def handle_info({ref, {:event, type, event_map}}, %{step_task: {_, ref}} = server) do
+  def handle_info({ref, {:event, type, event_map, partial}}, %{step_task: {_, ref}} = server) do
+    server = %{server | partial_message: partial_message_from(partial)}
     notify(server, type, event_map)
     {:noreply, server}
   end
@@ -305,6 +352,23 @@ defmodule Omni.Agent.Server do
     {:noreply, server}
   end
 
+  # -- Info (subscriber monitors) --
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, server) do
+    case Map.pop(server.monitors, ref) do
+      {nil, _} ->
+        {:noreply, server}
+
+      {pid, new_monitors} ->
+        {:noreply,
+         %{
+           server
+           | monitors: new_monitors,
+             subscribers: MapSet.delete(server.subscribers, pid)
+         }}
+    end
+  end
+
   def handle_info(_msg, server) do
     {:noreply, server}
   end
@@ -325,7 +389,8 @@ defmodule Omni.Agent.Server do
     %{
       server
       | state: %{server.state | status: :running, step: 0},
-        pending_messages: [user_message],
+        turn_messages: [user_message],
+        step_message: user_message,
         prompt_opts: prompt_opts
     }
     |> tap(&notify(&1, :message, user_message))
@@ -338,7 +403,7 @@ defmodule Omni.Agent.Server do
     if max_steps_reached?(server) do
       finalize_turn(server.last_response, server)
     else
-      last_message = List.last(server.pending_messages)
+      last_message = List.last(server.turn_messages)
 
       cond do
         last_message.role == :user ->
@@ -375,7 +440,7 @@ defmodule Omni.Agent.Server do
   defp build_context(server) do
     %Context{
       system: server.state.system,
-      messages: server.state.messages ++ server.pending_messages,
+      messages: server.state.messages ++ server.turn_messages,
       tools: server.state.tools
     }
   end
@@ -383,21 +448,21 @@ defmodule Omni.Agent.Server do
   # -- Step completion --
 
   defp handle_step_complete(response, server) do
-    pending_usage = Usage.add(server.pending_usage, response.usage)
-    step_messages = server.step_messages ++ [response.message]
+    turn_usage = Usage.add(server.turn_usage, response.usage)
+    step_messages = [server.step_message, response.message]
 
     server = %{
       server
-      | pending_messages: server.pending_messages ++ [response.message],
-        step_messages: step_messages,
+      | turn_messages: server.turn_messages ++ [response.message],
         step_task: nil,
         last_response: response,
-        pending_usage: pending_usage
+        turn_usage: turn_usage,
+        partial_message: nil
     }
 
     notify(server, :message, response.message)
     notify(server, :step, %{response | messages: step_messages})
-    evaluate_head(%{server | step_messages: []})
+    evaluate_head(server)
   end
 
   # -- Tool decision phase --
@@ -503,13 +568,13 @@ defmodule Omni.Agent.Server do
         end
       end)
 
-    # Build user message with all tool results, append to pending
+    # Build user message with all tool results, append to turn
     user_message = Message.new(role: :user, content: final_results)
 
     server = %{
       server
-      | pending_messages: server.pending_messages ++ [user_message],
-        step_messages: server.step_messages ++ [user_message]
+      | turn_messages: server.turn_messages ++ [user_message],
+        step_message: user_message
     }
 
     notify(server, :message, user_message)
@@ -559,7 +624,7 @@ defmodule Omni.Agent.Server do
     notify(server, :turn, {:continue, response})
 
     user_message = Message.new(role: :user, content: prompt)
-    server = %{server | pending_messages: [user_message], step_messages: []}
+    server = %{server | turn_messages: [user_message], step_message: user_message}
     notify(server, :message, user_message)
     evaluate_head(server)
   end
@@ -572,13 +637,13 @@ defmodule Omni.Agent.Server do
     server
   end
 
-  # Flushes the current segment (pending_messages) into state.messages and
-  # returns the flushed slice alongside the updated server. pending_messages
+  # Flushes the current segment (turn_messages) into state.messages and
+  # returns the flushed slice alongside the updated server. turn_messages
   # is cleared so the next segment starts empty.
   defp commit_segment(server) do
-    segment = server.pending_messages
+    segment = server.turn_messages
     new_messages = server.state.messages ++ segment
-    server = %{server | state: %{server.state | messages: new_messages}, pending_messages: []}
+    server = %{server | state: %{server.state | messages: new_messages}, turn_messages: []}
     {segment, server}
   end
 
@@ -608,19 +673,19 @@ defmodule Omni.Agent.Server do
       messages: segment_messages,
       output: if(server.last_response, do: server.last_response.output),
       stop_reason: if(server.last_response, do: server.last_response.stop_reason, else: :stop),
-      usage: server.pending_usage
+      usage: server.turn_usage
     }
   end
 
   defp build_cancel_response(server) do
-    last_assistant = find_last_assistant(server.pending_messages)
+    last_assistant = find_last_assistant(server.turn_messages)
 
     %Response{
       model: server.state.model,
       message: last_assistant,
-      messages: server.pending_messages,
+      messages: server.turn_messages,
       stop_reason: :cancelled,
-      usage: server.pending_usage
+      usage: server.turn_usage
     }
   end
 
@@ -691,9 +756,9 @@ defmodule Omni.Agent.Server do
     %{
       server
       | state: %{server.state | status: :idle, step: 0},
-        pending_messages: [],
-        step_messages: [],
-        pending_usage: %Usage{},
+        turn_messages: [],
+        turn_usage: %Usage{},
+        step_message: nil,
         step_task: nil,
         executor_task: nil,
         rejected_results: [],
@@ -701,6 +766,7 @@ defmodule Omni.Agent.Server do
         next_prompt: nil,
         prompt_opts: [],
         last_response: nil,
+        partial_message: nil,
         tool_map: nil,
         approved_uses: [],
         remaining_uses: [],
@@ -722,8 +788,58 @@ defmodule Omni.Agent.Server do
     Map.new(tools, fn tool -> {tool.name, tool} end)
   end
 
-  defp notify(%{listener: nil}, _type, _data), do: :ok
-  defp notify(%{listener: pid}, type, data), do: send(pid, {:agent, self(), type, data})
+  defp notify(server, type, data) do
+    msg = {:agent, self(), type, data}
+    Enum.each(server.subscribers, &send(&1, msg))
+    :ok
+  end
+
+  defp subscribe_pid(server, pid) do
+    if MapSet.member?(server.subscribers, pid) do
+      {server, build_snapshot(server)}
+    else
+      ref = Process.monitor(pid)
+
+      server = %{
+        server
+        | subscribers: MapSet.put(server.subscribers, pid),
+          monitors: Map.put(server.monitors, ref, pid)
+      }
+
+      {server, build_snapshot(server)}
+    end
+  end
+
+  defp unsubscribe_pid(server, pid) do
+    case find_monitor_ref(server.monitors, pid) do
+      nil ->
+        server
+
+      ref ->
+        Process.demonitor(ref, [:flush])
+
+        %{
+          server
+          | subscribers: MapSet.delete(server.subscribers, pid),
+            monitors: Map.delete(server.monitors, ref)
+        }
+    end
+  end
+
+  defp find_monitor_ref(monitors, pid) do
+    Enum.find_value(monitors, fn {ref, mon_pid} -> mon_pid == pid && ref end)
+  end
+
+  defp build_snapshot(server) do
+    %Snapshot{
+      state: server.state,
+      pending: server.turn_messages,
+      partial: server.partial_message
+    }
+  end
+
+  defp partial_message_from(%Response{message: %Message{} = msg}), do: msg
+  defp partial_message_from(_), do: nil
 
   # -- Callback dispatch --
 

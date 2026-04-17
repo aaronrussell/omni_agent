@@ -118,10 +118,9 @@ defmodule Omni.Agent.AgentCase do
         end
 
         agent_opts =
-          Keyword.merge(
-            [model: model(), opts: [api_key: "test-key", plug: {Req.Test, stub_name}]],
-            Keyword.drop(opts, [:stub_name, :fixture, :fixtures])
-          )
+          [model: model(), opts: [api_key: "test-key", plug: {Req.Test, stub_name}]]
+          |> Keyword.merge(Keyword.drop(opts, [:stub_name, :fixture, :fixtures]))
+          |> with_default_subscribe()
 
         Agent.start_link(agent_opts)
       end
@@ -135,12 +134,22 @@ defmodule Omni.Agent.AgentCase do
         end
 
         module_opts =
-          Keyword.merge(
-            [model: model(), opts: [api_key: "test-key", plug: {Req.Test, stub_name}]],
-            Keyword.drop(opts, [:stub_name, :fixture, :fixtures])
-          )
+          [model: model(), opts: [api_key: "test-key", plug: {Req.Test, stub_name}]]
+          |> Keyword.merge(Keyword.drop(opts, [:stub_name, :fixture, :fixtures]))
+          |> with_default_subscribe()
 
         module.start_link(module_opts)
+      end
+
+      # Unless the test explicitly set :subscribe or :subscribers, subscribe
+      # the test process by default so collect_events/2 and assert_receive
+      # can observe the agent's events.
+      defp with_default_subscribe(opts) do
+        if Keyword.has_key?(opts, :subscribe) or Keyword.has_key?(opts, :subscribers) do
+          opts
+        else
+          Keyword.put(opts, :subscribe, true)
+        end
       end
 
       defp unique_stub_name do

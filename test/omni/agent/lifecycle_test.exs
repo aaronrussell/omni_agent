@@ -162,8 +162,8 @@ defmodule Omni.Agent.LifecycleTest do
     end
   end
 
-  describe "no listener" do
-    test "agent completes without crashing when no listener is set" do
+  describe "no subscribers" do
+    test "agent completes without crashing when nobody is subscribed" do
       stub_name = unique_stub_name()
       stub_fixture(stub_name, @text_fixture)
 
@@ -173,21 +173,15 @@ defmodule Omni.Agent.LifecycleTest do
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
-      # Prompt without being the listener (pass a different listener)
-      # Actually, prompt/3 auto-sets caller as listener, so start a separate process
-      test_pid = self()
+      :ok = Agent.prompt(agent, "Hello!")
 
-      spawn(fn ->
-        :ok = Agent.prompt(agent, "Hello!")
-        send(test_pid, :prompted)
-      end)
-
-      assert_receive :prompted, 1000
-      # Give it time to finish the turn
+      # No subscribers — events go nowhere. Wait for idle by polling status.
       Process.sleep(500)
       assert Agent.get_state(agent, :status) == :idle
-      # State should have committed messages
       assert length(Agent.get_state(agent, :messages)) == 2
+
+      # No :agent messages should have been delivered to the test mailbox.
+      refute_receive {:agent, ^agent, _type, _data}, 50
     end
   end
 end

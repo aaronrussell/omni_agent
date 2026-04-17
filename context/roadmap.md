@@ -80,7 +80,7 @@ logic).
 
 ## Phase 3 — Agent: pub/sub and snapshot
 
-**Status:** Not started.
+**Status:** Done.
 
 **Spec:** `context/agent-redesign.md` (Pub/sub, Snapshot).
 

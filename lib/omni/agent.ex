@@ -16,7 +16,10 @@ defmodule Omni.Agent do
 
   Start an agent without a callback module for simple conversations:
 
-      {:ok, agent} = Omni.Agent.start_link(model: {:anthropic, "claude-sonnet-4-5-20250514"})
+      {:ok, agent} = Omni.Agent.start_link(
+        model: {:anthropic, "claude-sonnet-4-5-20250514"},
+        subscribe: true
+      )
       :ok = Omni.Agent.prompt(agent, "Hello!")
 
       # Events arrive as process messages
@@ -25,8 +28,8 @@ defmodule Omni.Agent do
         {:agent, ^agent, :turn, {:stop, response}} -> IO.puts("\\nDone!")
       end
 
-  The first `prompt/3` call automatically sets the caller as the event
-  listener. Call `listen/2` to set a different process.
+  Pass `subscribe: true` (or `subscribers: [pid1, pid2]`) to receive
+  events. Other processes can attach later via `subscribe/1,2`.
 
   ## Custom agents
 
@@ -91,7 +94,8 @@ defmodule Omni.Agent do
     * `:tools` — list of `%Tool{}` structs
     * `:private` — initial private map (runtime state visible in callbacks
       via `state.private`)
-    * `:listener` — pid to receive events (defaults to first `prompt/3` caller)
+    * `:subscribe` — if `true`, subscribes the caller to agent events
+    * `:subscribers` — list of pids to subscribe to agent events
     * `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)
     * `:opts` — inference options passed to `stream_text` each step
       (`:temperature`, `:max_tokens`, `:max_steps`, etc.)
@@ -100,8 +104,9 @@ defmodule Omni.Agent do
 
   ## Events
 
-  The listener receives `{:agent, pid, type, data}` messages. There are two
-  categories:
+  Subscribers receive `{:agent, pid, type, data}` messages. Attach one or
+  more via `subscribe/1,2` (or the `:subscribe` / `:subscribers` start
+  options). There are two categories:
 
   **Streaming events** — forwarded from each LLM response as it arrives:
 
@@ -136,9 +141,9 @@ defmodule Omni.Agent do
   lifecycle event.
 
   `:step` fires after each LLM request-response completes. The response's
-  `messages` field contains only the messages added in that step — the
-  assistant response, plus the preceding tool-result user message on
-  steps that followed tool execution.
+  `messages` field always carries exactly `[user, assistant]` — the user
+  message that prompted the step (the initial turn prompt, a continuation
+  prompt, or a tool-result user message) and the assistant response.
 
   `:turn` fires at segment boundaries and commits the segment's pending
   messages to `state.messages`. `{:continue, response}` means the turn
@@ -179,11 +184,23 @@ defmodule Omni.Agent do
   being intercepted (via `{:result, ...}` or `{:pause, ...}`), the agent
   stops the turn — `handle_turn/2` fires with `stop_reason: :tool_use`.
 
+  ## Pub/sub and snapshot
+
+  The agent maintains a set of subscribed pids. Use `subscribe/1,2` to
+  attach (returns `{:ok, %Snapshot{}}` atomically so late joiners can
+  align with in-flight state), and `unsubscribe/1,2` to detach.
+  Subscribers are cleaned up automatically when they die.
+
+  `get_snapshot/1` returns a `%Omni.Agent.Snapshot{}` holding the
+  committed state, the segment's pending messages, and the current
+  streaming assistant message (if any). Compose everything known right
+  now as `state.messages ++ pending ++ List.wrap(partial)`.
+
   ## Pause and resume
 
   When `handle_tool_use/2` returns `{:pause, reason, state}`, the agent
-  pauses and sends `{:agent, pid, :pause, {reason, %ToolUse{}}}` to the
-  listener. The `reason` is an app-defined term (e.g., `:authorize`,
+  pauses and sends `{:agent, pid, :pause, {reason, %ToolUse{}}}` to its
+  subscribers. The `reason` is an app-defined term (e.g., `:authorize`,
   `:ui_input`) that tags why the agent paused. The caller inspects the
   tool use and resumes:
 
@@ -296,7 +313,12 @@ defmodule Omni.Agent do
 
   ## LiveView integration
 
-  Agent events map naturally to `handle_info/2`:
+  Subscribe on mount and handle events in `handle_info/2`:
+
+      def mount(_params, _session, socket) do
+        {:ok, agent} = Omni.Agent.start_link(model: ..., subscribe: true)
+        {:ok, assign(socket, agent: agent)}
+      end
 
       def handle_event("submit", %{"prompt" => text}, socket) do
         :ok = Agent.prompt(socket.assigns.agent, text)
@@ -316,7 +338,7 @@ defmodule Omni.Agent do
       end
   """
 
-  alias Omni.Agent.State
+  alias Omni.Agent.{Snapshot, State}
   alias Omni.Content.{ToolResult, ToolUse}
   alias Omni.Response
 
@@ -351,10 +373,10 @@ defmodule Omni.Agent do
     * `:length` — output was truncated (hit max output tokens)
     * `:refusal` — the model declined due to content or safety policy
 
-  Return `{:stop, state}` to end the turn (listener receives
+  Return `{:stop, state}` to end the turn (subscribers receive
   `{:agent, pid, :turn, {:stop, response}}`), or `{:continue, content, state}`
   to commit the current segment and append a new user message
-  (listener receives `{:agent, pid, :turn, {:continue, response}}`).
+  (subscribers receive `{:agent, pid, :turn, {:continue, response}}`).
   The `content` argument accepts a string or a list of content blocks.
 
   If a staged prompt exists (from `prompt/3` while running), it overrides this
@@ -376,7 +398,7 @@ defmodule Omni.Agent do
     * `{:result, result, state}` — provide a `%ToolResult{}` directly,
       skip execution
     * `{:pause, reason, state}` — pause the agent and send
-      `{:agent, pid, :pause, {reason, tool_use}}` to the listener;
+      `{:agent, pid, :pause, {reason, tool_use}}` to subscribers;
       resume later with `resume/2`
 
   After all decisions are collected, approved tools execute in parallel.
@@ -410,7 +432,7 @@ defmodule Omni.Agent do
   distinct from `handle_turn` with a `:length` or `:refusal` stop reason,
   which means the request succeeded but the model couldn't complete normally.
 
-  Return `{:stop, state}` to surface the error to the listener (the agent
+  Return `{:stop, state}` to surface the error to subscribers (the agent
   discards pending messages and goes idle), or `{:retry, state}` to retry
   the same step immediately.
 
@@ -543,15 +565,47 @@ defmodule Omni.Agent do
   end
 
   @doc """
-  Sets the listener process for agent events.
+  Subscribes the caller to agent events.
 
-  Only valid when idle. Returns `{:error, :running}` if the agent is running
-  or paused.
+  Returns `{:ok, %Snapshot{}}` — the snapshot captures the agent's state,
+  pending segment messages, and any currently-streaming assistant message
+  at the instant of subscription. Every event emitted after this call is
+  delivered to the caller, so a subscriber joining mid-stream can
+  populate its view and keep up without gaps.
+
+  Subscribing is idempotent. Subscribers are monitored and removed
+  automatically when they die.
   """
-  @spec listen(GenServer.server(), pid()) :: :ok | {:error, :running}
-  def listen(agent, pid) do
-    GenServer.call(agent, {:listen, pid})
-  end
+  @spec subscribe(GenServer.server()) :: {:ok, Snapshot.t()}
+  def subscribe(agent), do: GenServer.call(agent, :subscribe)
+
+  @doc """
+  Subscribes the given pid to agent events.
+
+  Same semantics as `subscribe/1`, but for an arbitrary pid rather than
+  the caller.
+  """
+  @spec subscribe(GenServer.server(), pid()) :: {:ok, Snapshot.t()}
+  def subscribe(agent, pid) when is_pid(pid), do: GenServer.call(agent, {:subscribe, pid})
+
+  @doc "Unsubscribes the caller from agent events."
+  @spec unsubscribe(GenServer.server()) :: :ok
+  def unsubscribe(agent), do: GenServer.call(agent, :unsubscribe)
+
+  @doc "Unsubscribes the given pid from agent events."
+  @spec unsubscribe(GenServer.server(), pid()) :: :ok
+  def unsubscribe(agent, pid) when is_pid(pid), do: GenServer.call(agent, {:unsubscribe, pid})
+
+  @doc """
+  Returns a `%Omni.Agent.Snapshot{}` of the agent right now.
+
+  The snapshot bundles the committed state, the in-flight segment's
+  pending messages, and the currently-streaming assistant message
+  (if any). Compose everything the agent knows as
+  `state.messages ++ pending ++ List.wrap(partial)`.
+  """
+  @spec get_snapshot(GenServer.server()) :: Snapshot.t()
+  def get_snapshot(agent), do: GenServer.call(agent, :get_snapshot)
 
   @doc """
   Returns the agent's `%State{}` struct or a single field from it.

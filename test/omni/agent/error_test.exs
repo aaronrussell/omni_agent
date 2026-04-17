@@ -9,6 +9,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -28,6 +29,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         ErrorRetryAgent.start_link(
           model: model(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -45,6 +47,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         ErrorRetryAgent.start_link(
           model: model(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -76,7 +79,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         CrashRetryAgent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -108,7 +111,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           tools: [hanging_tool],
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
@@ -141,7 +144,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -165,7 +168,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -185,7 +188,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
@@ -214,7 +217,7 @@ defmodule Omni.Agent.ErrorTest do
       {:ok, agent} =
         ErrorRetryAgent.start_link(
           model: model(),
-          listener: self(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 

@@ -95,8 +95,7 @@ defmodule Omni.Agent.ContinuationTest do
     test ":turn {:continue, _} carries segment response with messages" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
-          fixtures: [@text_fixture, @text_fixture, @text_fixture],
-          listener: self()
+          fixtures: [@text_fixture, @text_fixture, @text_fixture]
         )
 
       :ok = Agent.prompt(agent, "Start")
@@ -115,10 +114,7 @@ defmodule Omni.Agent.ContinuationTest do
   describe "per-prompt opts" do
     test "per-prompt opts are ephemeral and don't persist to next turn" do
       {:ok, agent} =
-        start_agent(
-          fixtures: [@text_fixture, @text_fixture],
-          listener: self()
-        )
+        start_agent(fixtures: [@text_fixture, @text_fixture])
 
       # First prompt with max_steps override
       :ok = Agent.prompt(agent, "First", max_steps: 1)

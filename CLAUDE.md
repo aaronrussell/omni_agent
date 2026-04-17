@@ -12,7 +12,7 @@ The package is separated from `omni` because the stateless LLM API layer (omni) 
 
 An agent is a process that holds a model, a context (system prompt, messages, tools), and user-defined state. The outside world sends prompts in; the agent works on them (potentially across multiple LLM steps) and sends events back. Users control behaviour through lifecycle callbacks.
 
-The agent owns the **turn** (a complete prompt-to-stop cycle), while the **application** owns the session (persistence, branching, navigation, cumulative usage tracking). During a turn, messages accumulate internally as `pending_messages`. On success (`{:stop, response}`), they're committed to `context.messages`. On cancel or error, they're discarded — the context always stays in a valid state.
+The agent owns the **turn** (a complete prompt-to-stop cycle), while the **application** owns the session (persistence, branching, navigation, cumulative usage tracking). During a turn, messages accumulate internally as `turn_messages`. On success (`{:stop, response}`), they're committed to `state.messages`. On cancel or error, they're discarded — the committed state always stays valid.
 
 ### What lives here vs in `omni`
 
@@ -62,11 +62,11 @@ The agent GenServer never blocks on IO. All blocking work is delegated to spawne
 Agent state is split into two structs:
 
 - **`Omni.Agent.State`** — the public struct passed to all callbacks. Contains `model`, `system`, `messages`, `tools`, `opts`, `private`, `status`, `step`.
-- **`Omni.Agent.Server`** (internal) — wraps `State` and adds GenServer machinery: task refs, pending messages/usage, tool decision state, staged prompts. Never exposed to callbacks.
+- **`Omni.Agent.Server`** (internal) — wraps `State` and adds GenServer machinery: task refs, turn messages/usage, tool decision state, staged prompts. Never exposed to callbacks.
 
-### State and pending messages
+### State and turn messages
 
-Messages live directly on `state.messages`. The agent rebuilds a `%Context{system, messages, tools}` on each call to `Omni.stream_text/3` internally. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `pending_messages` (internal server state). LLM requests see `state.messages ++ pending_messages`. On `{:stop, ...}`, pending messages are committed to `state.messages`. On cancel or error, they're discarded.
+Messages live directly on `state.messages`. The agent rebuilds a `%Context{system, messages, tools}` on each call to `Omni.stream_text/3` internally. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `turn_messages` (internal server state). LLM requests see `state.messages ++ turn_messages`. On every `:turn` event (both `{:stop, _}` and `{:continue, _}`), `turn_messages` commits to `state.messages`. On cancel or error, it's discarded.
 
 This design means `state.messages` is always in a valid state — no trailing user messages after cancel/error. The application can use `set_state/2,3` to update fields (swap messages for navigation, hydrate a session, etc.) when the agent is idle. `set_state(:messages, ...)` validates the list ends with an `:assistant` message containing no `ToolUse` blocks (or is empty).
 
@@ -77,7 +77,7 @@ The agent loop operates at two levels:
 - **Step** — a single LLM request-response. If the model calls tools, the agent handles them and makes another request.
 - **Turn** — starts with `prompt/3`, ends with `{:stop, response}`. `handle_turn` fires when the model responds without executable tools. If it returns `{:continue, ...}`, the agent keeps working within the same turn.
 
-A single `evaluate_head/1` function drives the state machine: last pending message is a user message → spawn step, assistant with tool uses → tool decision phase, assistant without → `handle_turn`.
+A single `evaluate_head/1` function drives the state machine: last turn message is a user message → spawn step, assistant with tool uses → tool decision phase, assistant without → `handle_turn`.
 
 The agent does **not** use `Omni.Loop` for tool execution — it calls `stream_text` with `max_steps: 1` so Loop never enters its tool loop. The agent manages tools itself via `handle_tool_use`/`handle_tool_result` callbacks, enabling per-tool approval gates and pause/resume.
 
@@ -107,10 +107,10 @@ lib/omni/
 - Agent statuses: `:idle`, `:running`, `:paused`. Status determines which API calls are valid.
 - All callbacks are optional with `defoverridable` defaults. Users implement only what they need.
 - `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:system`, `:messages`, `:tools`, `:opts`. `:private` is not settable — callback modules own mutation.
-- `:step` events carry the per-step `%Response{}` from each LLM request. `:stop`, `:continue`, and `:cancelled` events carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
+- `:step` events carry the per-step `%Response{}` from each LLM request. `response.messages` is always `[user, assistant]` — the user message that prompted the step (initial prompt, continuation prompt, or tool-result user) paired with the assistant response. `:stop`, `:continue`, and `:cancelled` events carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
 - The agent has no `session_id` or built-in persistence — session identity and storage are application concerns. The `{:stop, response}` event carries enough context (`messages`, `usage`) for external listeners to persist.
 - `prompt/3` behaviour depends on status: idle → start turn, running/paused → stage for next turn boundary (steering).
-- On error (after `handle_error/2` returns `{:stop, state}`), pending messages are discarded and the agent goes to `:idle`. The app can prompt again immediately.
+- On error (after `handle_error/2` returns `{:stop, state}`), `turn_messages` is discarded and the agent goes to `:idle`. The app can prompt again immediately.
 
 ## Testing
 
