@@ -4,172 +4,232 @@ A sequence of phases for the current direction of work. Each phase leaves
 the system in a working, tested state and can land as its own commit or PR.
 
 Detailed design specs live alongside this file (e.g. `agent-redesign.md`
-for the Agent refactor). This roadmap is an index, not a spec.
+for the Agent refactor, `session-design.md` for the Session build-out).
+This roadmap is an index, not a spec.
 
 ---
 
-## Phase 1 — Agent: state shape and `init/1`
+## Completed phases
 
-**Status:** Done.
+### Phase 1 — Agent: state shape and `init/1` *(done)*
 
-**Spec:** `context/agent-redesign.md` (State shape, Validation, Callbacks).
+**Spec:** `agent-redesign.md` (State shape, Validation, Callbacks).
 
-**Goal:** Replace the nested `%Context{}` inside `%State{}` with a flat
-state, simplify the stash story, and move `init/1` to a state-in/state-out
-shape.
+Flattened `%State{}` (dropped nested `%Context{}` and `:meta`), moved
+`init/1` to a state-in/state-out shape, added `:private` start option,
+and introduced the `set_state(:messages, _)` validation rule (list must
+be empty or end on an assistant message with no ToolUse blocks).
 
-**Key changes:**
+### Phase 2 — Agent: event model *(done)*
 
-- Flatten `%State{}` to `{model, system, messages, tools, opts, private,
-  status, step}`. Drop `:meta`.
-- `:private` settable via `start_link` option, in addition to `init/1`.
-- `init/1` receives a fully-resolved `%State{}` and returns
-  `{:ok, state} | {:error, term}`.
-- Add `set_state(:messages, ...)` validation — list must be empty or end
-  with an `:assistant` message containing no `ToolUse` blocks.
-- Validate the state returned from `init/1` against the same rule.
-- Propagate the shape change through all internal references
-  (`state.context.x` → `state.x`), test helpers, and test fixtures.
+**Spec:** `agent-redesign.md` (Events, Turn lifecycle).
 
-**Dependencies:** None. Foundation for all subsequent phases.
+Redesigned the event catalogue: added per-message `:message` events,
+collapsed `:stop`/`:continue` into `:turn {:stop, _}` / `:turn {:continue, _}`
+with commit-on-every-segment semantics, added `:state` events for
+`set_state` mutations, and aligned `:step` / `:turn` response payloads
+with per-segment semantics.
+
+### Phase 3 — Agent: pub/sub and snapshot *(done)*
+
+**Spec:** `agent-redesign.md` (Pub/sub, Snapshot).
+
+Replaced the single-listener model with native multi-subscriber pub/sub
+(`subscribe/1,2`, `unsubscribe/1,2`), added atomic snapshot-on-subscribe
+via `%Omni.Agent.Snapshot{}`, and retired the `listener` concept.
+
+### Phase 4 — Session: design *(done)*
+
+**Spec:** `session-design.md`.
+
+Design exercise producing the full spec for `Omni.Session`: storage
+adapter shape, tree schema, persistence triggers, load-mode resolution,
+public API, events, snapshot, navigation/regeneration mechanics, and
+parked follow-up work (Session Manager, idle-timeout, etc.). Phases 5–8
+below derive directly from this spec.
+
+---
+
+## Phase 5 — Session: Tree module
+
+**Status:** Not started.
+
+**Spec:** `session-design.md` (Tree schema).
+
+**Goal:** Implement `Omni.Session.Tree` as a pure-data module that owns
+the branching message structure.
+
+**Key work:**
+
+- `Tree` struct: `%{nodes, path, cursors}` with auto-incrementing node
+  IDs (`map_size(nodes) + 1`) and append-only semantics.
+- `new/1` constructor from an enumerable of nodes (for hydration).
+- Mutation: `push/3`, `push_node/3`, `navigate/2`, `extend/1`.
+- Queries: `path_to/2`, `children/2`, `roots/1`, `get_node/2`,
+  `get_message/2`.
+- Derived views: `messages/1`, `usage/1`, `head/1`, `size/1`.
+
+**Dependencies:** None (pure data).
 
 **Acceptance:**
 
-- All existing tests pass (with signature/shape updates).
-- No `state.context` references remain.
-- `set_state(:messages, ...)` rejects invalid input with
-  `{:error, :invalid_messages}`.
+- All Tree operations pass unit tests in isolation.
+- Branch scenario test: push A, B, C; navigate to A; push D (creating a
+  branch); navigate to C via cursors; extend — verifies cursor and path
+  behaviour.
+- Empty-tree and single-root edge cases covered.
 
 ---
 
-## Phase 2 — Agent: event model
+## Phase 6 — Session: Store behaviour + reference adapter
 
-**Status:** Done.
+**Status:** Not started.
 
-**Spec:** `context/agent-redesign.md` (Events, Turn lifecycle).
+**Spec:** `session-design.md` (Storage).
 
-**Goal:** Redesign the event catalogue to support per-message granularity,
-commit-on-every-turn-segment semantics, and externally-visible state
-mutations.
+**Goal:** Define the storage adapter contract and ship a reference
+filesystem adapter.
 
-**Key changes:**
+**Key work:**
 
-- Add `:message` event fired per message appended to pending.
-- Collapse the current `:stop` and `:continue` events into `:turn` with
-  `{:stop, response}` / `{:continue, response}` tuple variants. Both
-  commit pending to `state.messages`.
-- Add `:state` event fired after a successful `set_state`.
-- Align `:step.response.messages` and `:turn.response.messages` with
-  segment semantics (per-step / per-segment, not per-turn).
-- Update event-ordering tests and add new tests for `:message`, `:state`,
-  and the `:turn` variants.
+- `Omni.Session.Store` dispatch module.
+- `Omni.Session.Store.Adapter` behaviour (`save_tree`, `save_state`,
+  `load`, `list`, `delete`).
+- `%Omni.Session.Store{adapter, config}` struct threaded from Session
+  start options.
+- `Omni.Session.Store.FileSystem` reference adapter: per-session
+  directory, `nodes.jsonl` append-only log, `state.json` overwrite blob,
+  `Omni.Codec` for term ⇄ JSON.
+- Integration tests: create, save_tree (append with `:new_node_ids`),
+  save_state (overwrite), load (round trip), list, delete, error
+  scenarios.
 
-**Dependencies:** Phase 1 (benefits from flat state when expressing commit
-logic).
+**Dependencies:** Phase 5.
 
 **Acceptance:**
 
-- Single chatbot turn produces: `:message (user) → streaming → :message
-  (assistant) → :step → :turn {:stop, ...}`.
-- Mega-turns produce a `:turn {:continue, ...}` per segment and a final
-  `:turn {:stop, ...}`.
-- Cancel/error do not emit `:turn` and leave `state.messages` unchanged.
-- `set_state` emits `:state` with the new full `%State{}`.
+- Filesystem adapter round-trips a tree with branches and metadata
+  losslessly.
+- Adapter behaviour documented clearly enough that SQLite / Postgres /
+  other adapters could be implemented from the spec alone.
 
 ---
 
-## Phase 3 — Agent: pub/sub and snapshot
+## Phase 7 — Session: core GenServer
 
-**Status:** Done.
+**Status:** Not started.
 
-**Spec:** `context/agent-redesign.md` (Pub/sub, Snapshot).
+**Spec:** `session-design.md` (State shape, Lifecycle, Events, Snapshot,
+Pub/sub, Load-mode resolution).
 
-**Goal:** Replace the single-listener model with native multi-subscriber
-pub/sub, add atomic snapshot-on-subscribe, and retire the `listener`
-concept.
+**Goal:** The Session GenServer itself: lifecycle, Agent wrapping,
+turn-driven persistence, pub/sub, basic API surface.
 
-**Key changes:**
+**Key work:**
 
-- Replace `listener` with a `MapSet` of subscribers (plus monitors for
-  cleanup on subscriber death).
-- Add `subscribe/1,2`, `unsubscribe/1,2`.
-- Add `%Omni.Agent.Snapshot{state, pending, partial}` struct and
+- `Omni.Session` GenServer.
+- `start_link/1` supporting `:new` (explicit or auto-generated id),
+  `:load` (hydration from store), namespaced `:agent` / `:store` options,
+  and load-mode resolution rules.
+- Auto-generated IDs via `:crypto.strong_rand_bytes(16)
+  |> Base.url_encode64(padding: false)`.
+- Linked Agent startup; event forwarding with `{:agent, _, _, _}` →
+  `{:session, _, _, _}` re-tagging.
+- Turn commit → `Store.save_tree` with `:new_node_ids`.
+- Agent `:state` event → change-detection via `last_persisted_state` →
+  `Store.save_state`.
+- `last_persisted_state` seeded on hydration before Agent start, to
+  avoid spurious post-init writes.
+- `:store {:saved, _}` / `:store {:error, _}` events; session never
+  halts on store errors.
+- Subscribe/unsubscribe with monitors; atomic snapshot-on-subscribe via
+  `%Omni.Session.Snapshot{id, title, tree, agent}`.
+- Turn control passthrough: `prompt/2,3`, `cancel/1`, `resume/2`.
+- Inspection: `get_agent/1,2`, `get_tree/1`, `get_title/1`,
   `get_snapshot/1`.
-- Track `partial_message` internally — updated from streaming deltas,
-  cleared on `:message` emission for the assistant.
-- Add `:subscribe` and `:subscribers` start options. Remove `:listener`
-  start option and `listen/2`.
-- Guarantee atomic subscribe (snapshot built + subscriber added in a single
-  `handle_call` clause).
-- Tests: multi-subscriber delivery, late-join consistency, subscriber
-  cleanup on death, snapshot correctness mid-stream.
+- `stop/1` graceful shutdown.
+- Agent crash = Session crash (linked, no `trap_exit`).
 
-**Dependencies:** Phase 2 (snapshot tracks `partial_message`, which is
-cleanly bounded by the `:message` event introduced in phase 2).
+**Dependencies:** Phases 5 and 6.
 
 **Acceptance:**
 
-- Multiple subscribers receive identical event streams.
-- A subscriber joining mid-stream receives a snapshot whose combined
-  `messages ++ pending ++ List.wrap(partial)` equals the live view, and
-  every subsequent event fits on top.
-- Dying subscribers are removed without error.
-- No `listener`-related code remains.
+- New-session lifecycle: create, prompt, verify tree persisted. Restart
+  process, `load:` same id, full conversation restored.
+- Multi-turn persistence works; cancel/error turns do not corrupt
+  persisted state.
+- Concurrent subscribers receive identical event streams.
+- Store errors do not halt the session; `:store {:error, _}` events
+  fire.
+- Load-mode resolution edge cases covered: unresolvable persisted model
+  falls back to start opt; `agent: [messages: _]` rejected on `:new`,
+  ignored on `:load`.
 
 ---
 
-## Phase 4 — Session: design
+## Phase 8 — Session: navigation, regen, mutation APIs
 
-**Status:** Not started. **Design work required before any implementation.**
+**Status:** Not started.
 
-**Spec:** To be written (`context/session-design.md` or similar).
+**Spec:** `session-design.md` (Navigation & regeneration, Public API
+§ Mutation).
 
-**Goal:** Design the wrapper process that owns conversation lifetime —
-identity, persistent storage, a branching message tree, Session-level
-pub/sub, and navigation/regeneration semantics.
+**Goal:** Branching navigation, regeneration semantics, and the full
+mutation surface.
 
-**Open design questions to settle before implementation:**
+**Key work:**
 
-- Storage adapter shape. Behaviour vs callback module vs `Req.Plug`-style
-  function. How adapters signal partial-write failures.
-- Tree schema. Node identity, parent/child references, how tool-use /
-  tool-result pairs are grouped in the tree.
-- Active path materialization. When (and how often) the path is
-  recomputed. Whether it lives in Session state or is derived on demand.
-- Session-level event catalogue. `:node`, `:tree`, and how Agent events
-  are forwarded/augmented.
-- Session lifecycle. Whether the inner Agent is long-lived or spun up per
-  turn. How Session behaves when idle (Agent alive? Dead? Hydration cost?).
-- Late-join consistency across Agent lifetimes. How Session composes its
-  own snapshot from tree + active-path messages + (when live) an Agent's
-  partial.
-- Public API shape. `Session.prompt`, `navigate`, `branch`, `regenerate`,
-  `subscribe`, `tree`, etc. Which Agent operations are surfaced vs hidden.
-- Naming — confirm `Omni.Session` or alternative (`Conversation`,
-  `Thread`, etc.).
+- `navigate/2`: set active path via parent-walk; update cursors;
+  `Agent.set_state(messages: ...)`; emit `:tree` with empty `new_nodes`.
+- `branch/3`: navigate + prompt, atomically surfaced as a single call.
+- `regen/2`: targets an assistant node; navigates to parent-of-user;
+  sets Agent messages; re-prompts with the original user content;
+  uses `regen_target` flag to drop the duplicated user message from the
+  resulting `:turn` response before tree commit.
+- `set_agent/2,3` delegating to `Agent.set_state`.
+- `set_title/2`: updates title, triggers `save_state` via digest path,
+  emits `:title` event.
+- `add_tool/2`, `remove_tool/2`: helpers over `set_agent(:tools, ...)`
+  (tools are not persisted).
+- `:tree` events fire on every tree mutation (turn commits, navigation,
+  branch/regen initiation).
 
-**Dependencies:** Phases 1–3 complete, so Session can be built against a
-stable Agent API with no further churn.
+**Dependencies:** Phase 7.
 
-**Acceptance (for the design phase itself):**
+**Acceptance:**
 
-- A `session-design.md` document exists and captures decisions on each of
-  the open questions above.
-- A follow-up implementation roadmap (phases 5+) is appended here or in
-  that document.
+- Branching flow: prompt A, get response; navigate back to A; prompt B
+  (branches from A); tree structure and store contents verified.
+- Regen flow: regen assistant node; original preserved; new assistant
+  is sibling; cursor updated to new branch.
+- Cursor navigation: navigate away and back preserves previous branch
+  via cursors.
+- `set_title` survives restart.
+- `set_agent(:tools, _)` does not trigger spurious `save_state` (tools
+  not in persistable subset).
+- Change-detection correctness: navigation (which calls
+  `Agent.set_state(messages: _)`) does not spuriously persist state.
 
 ---
 
-## Beyond phase 4
+## Beyond phase 8
 
-Not scheduled, but known candidates for future work:
+Candidates for follow-up work, detailed in `session-design.md` (Parked
+section):
 
-- Init-triggers-initial-prompt support (extended `init/1` return shape or
-  `:prompt` start option). Parked in `agent-redesign.md`.
-- Replay / resume-from-sequence semantics for Session subscribers (a
-  persistent event log).
-- Supervision primitives for running multiple Sessions under a named
-  registry.
+- **`Omni.Session.Manager`** — supervisor, registry, DynamicSupervisor,
+  idle-timeout self-termination, `Manager.delete/1` convenience. Likely
+  the next major design phase once Session proper is stable.
+- **`:data` field on Agent state** — app-defined per-session metadata
+  slot on Agent rather than Session. Deferred until a concrete consumer
+  surfaces.
+- **Title auto-generation helpers** — `auto_title:` start option as sugar
+  over the subscribe-and-set pattern.
+- **Retry / write-behind queue** for high-latency store adapters.
+- **Persistent event log / replay** — subscribers resuming from a
+  sequence number after process restart.
+- **Agent init-triggers-initial-prompt** — extended `init/1` return or
+  `:prompt` start option (parked in `agent-redesign.md`).
 
-These are deferred until the phases above are in hand and the concrete
-need has been demonstrated.
+These are deferred until the phases above are in hand and concrete need
+has been demonstrated.
