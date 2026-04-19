@@ -76,7 +76,7 @@ defmodule Omni.Agent.ContinuationTest do
   end
 
   describe "usage in response" do
-    test "turn response carries usage from continuation turns" do
+    test "each :turn event's usage reflects only its segment, not the cumulative turn" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@text_fixture, @text_fixture, @text_fixture]
@@ -85,9 +85,15 @@ defmodule Omni.Agent.ContinuationTest do
       :ok = Agent.prompt(agent, "Start")
       events = collect_events(agent)
 
-      assert {:turn, {:stop, %Response{} = resp}} = List.last(events)
-      # Should be 3x a single request's usage
-      assert resp.usage.total_tokens > 0
+      turn_usages =
+        for {:turn, {_kind, %Response{usage: usage}}} <- events, do: usage.total_tokens
+
+      assert length(turn_usages) == 3
+      # All three segments use the same fixture, so per-segment usage must
+      # be equal. If turn_usage failed to reset between segments the values
+      # would be X, 2X, 3X — non-equal and accumulating.
+      assert Enum.uniq(turn_usages) |> length() == 1
+      assert hd(turn_usages) > 0
     end
   end
 

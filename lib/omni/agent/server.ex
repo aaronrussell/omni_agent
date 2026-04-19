@@ -619,8 +619,8 @@ defmodule Omni.Agent.Server do
   end
 
   defp continue_turn(prompt, server) do
-    {segment, server} = commit_segment(server)
-    response = build_turn_response(server, segment)
+    {segment, usage, server} = commit_segment(server)
+    response = build_turn_response(server, segment, usage)
     notify(server, :turn, {:continue, response})
 
     user_message = Message.new(role: :user, content: prompt)
@@ -630,21 +630,30 @@ defmodule Omni.Agent.Server do
   end
 
   defp complete_turn(_response, server) do
-    {segment, server} = commit_segment(server)
-    response = build_turn_response(server, segment)
+    {segment, usage, server} = commit_segment(server)
+    response = build_turn_response(server, segment, usage)
     server = reset_turn(server)
     notify(server, :turn, {:stop, response})
     server
   end
 
-  # Flushes the current segment (turn_messages) into state.messages and
-  # returns the flushed slice alongside the updated server. turn_messages
-  # is cleared so the next segment starts empty.
+  # Flushes the current segment into state.messages and resets segment
+  # accumulators. Returns the flushed messages and the segment's usage
+  # so the :turn response reflects just this segment — multi-segment
+  # turns then carry per-segment usage instead of cumulative.
   defp commit_segment(server) do
     segment = server.turn_messages
+    usage = server.turn_usage
     new_messages = server.state.messages ++ segment
-    server = %{server | state: %{server.state | messages: new_messages}, turn_messages: []}
-    {segment, server}
+
+    server = %{
+      server
+      | state: %{server.state | messages: new_messages},
+        turn_messages: [],
+        turn_usage: %Usage{}
+    }
+
+    {segment, usage, server}
   end
 
   # -- Cancel --
@@ -664,7 +673,7 @@ defmodule Omni.Agent.Server do
 
   # -- Response builders --
 
-  defp build_turn_response(server, segment_messages) do
+  defp build_turn_response(server, segment_messages, usage) do
     last_assistant = find_last_assistant(segment_messages)
 
     %Response{
@@ -673,7 +682,7 @@ defmodule Omni.Agent.Server do
       messages: segment_messages,
       output: if(server.last_response, do: server.last_response.output),
       stop_reason: if(server.last_response, do: server.last_response.stop_reason, else: :stop),
-      usage: server.turn_usage
+      usage: usage
     }
   end
 

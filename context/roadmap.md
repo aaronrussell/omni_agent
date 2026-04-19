@@ -79,57 +79,31 @@ hint) and `session.json` (disjoint-keys merge between `save_tree` and
 the `omni` dep to a path dep to consume `Omni.Codec` ahead of its
 release.
 
----
-
-## Phase 7 — Session: core GenServer
-
-**Status:** Not started.
+### Phase 7 — Session: core GenServer *(done)*
 
 **Spec:** `session-design.md` (State shape, Lifecycle, Events, Snapshot,
 Pub/sub, Load-mode resolution).
 
-**Goal:** The Session GenServer itself: lifecycle, Agent wrapping,
-turn-driven persistence, pub/sub, basic API surface.
-
-**Key work:**
-
-- `Omni.Session` GenServer.
-- `start_link/1` supporting `:new` (explicit or auto-generated id),
-  `:load` (hydration from store), namespaced `:agent` / `:store` options,
-  and load-mode resolution rules.
-- Auto-generated IDs via `:crypto.strong_rand_bytes(16)
-  |> Base.url_encode64(padding: false)`.
-- Linked Agent startup; event forwarding with `{:agent, _, _, _}` →
-  `{:session, _, _, _}` re-tagging.
-- Turn commit → `Store.save_tree` with `:new_node_ids`.
-- Agent `:state` event → change-detection via `last_persisted_state` →
-  `Store.save_state`.
-- `last_persisted_state` seeded on hydration before Agent start, to
-  avoid spurious post-init writes.
-- `:store {:saved, _}` / `:store {:error, _}` events; session never
-  halts on store errors.
-- Subscribe/unsubscribe with monitors; atomic snapshot-on-subscribe via
-  `%Omni.Session.Snapshot{id, title, tree, agent}`.
-- Turn control passthrough: `prompt/2,3`, `cancel/1`, `resume/2`.
-- Inspection: `get_agent/1,2`, `get_tree/1`, `get_title/1`,
-  `get_snapshot/1`.
-- `stop/1` graceful shutdown.
-- Agent crash = Session crash (linked, no `trap_exit`).
-
-**Dependencies:** Phases 5 and 6.
-
-**Acceptance:**
-
-- New-session lifecycle: create, prompt, verify tree persisted. Restart
-  process, `load:` same id, full conversation restored.
-- Multi-turn persistence works; cancel/error turns do not corrupt
-  persisted state.
-- Concurrent subscribers receive identical event streams.
-- Store errors do not halt the session; `:store {:error, _}` events
-  fire.
-- Load-mode resolution edge cases covered: unresolvable persisted model
-  falls back to start opt; `agent: [messages: _]` rejected on `:new`,
-  ignored on `:load`.
+Shipped `Omni.Session` as a single module wrapping a linked `Omni.Agent`.
+Supports `new: :auto | binary()` and `load: binary()` start modes with
+load-mode resolution (persisted model wins, start-opt system/opts win,
+tree is the sole message source). Forwards agent events re-tagged as
+`{:session, pid, type, payload}`. Turn commits push segment messages
+into the tree (per-segment usage attached to the segment's last
+assistant) and synchronously `save_tree` via the store's adapter, with
+ordering `:turn → :tree → :store {:saved, :tree}`. Agent `:state`
+events diff the persistable subset (`model`, `system`, `opts`, `title`)
+against `last_persisted_state` — changes trigger `save_state`, tool
+and private mutations don't. Pub/sub with per-subscriber monitors and
+atomic `Session.Snapshot{id, title, tree, agent}`. Turn passthroughs
+(`prompt`, `cancel`, `resume`), inspection (`get_agent`, `get_tree`,
+`get_title`, `get_snapshot`), and `set_agent/2,3` (pulled forward from
+Phase 8 to keep change-detection testable). `stop/1` stops the linked
+Agent. Agent crash cascades to Session via link (no `trap_exit`).
+Bundled a small Agent fix: `commit_segment/1` now resets `turn_usage`
+per segment so each `:turn` event's `response.usage` is segment-scoped
+— multi-segment turns no longer double-count usage in the persisted
+tree.
 
 ---
 
@@ -152,13 +126,14 @@ mutation surface.
   sets Agent messages; re-prompts with the original user content;
   uses `regen_target` flag to drop the duplicated user message from the
   resulting `:turn` response before tree commit.
-- `set_agent/2,3` delegating to `Agent.set_state`.
 - `set_title/2`: updates title, triggers `save_state` via digest path,
   emits `:title` event.
 - `add_tool/2`, `remove_tool/2`: helpers over `set_agent(:tools, ...)`
   (tools are not persisted).
 - `:tree` events fire on every tree mutation (turn commits, navigation,
   branch/regen initiation).
+
+Note: `set_agent/2,3` has already shipped with Phase 7.
 
 **Dependencies:** Phase 7.
 
@@ -171,8 +146,6 @@ mutation surface.
 - Cursor navigation: navigate away and back preserves previous branch
   via cursors.
 - `set_title` survives restart.
-- `set_agent(:tools, _)` does not trigger spurious `save_state` (tools
-  not in persistable subset).
 - Change-detection correctness: navigation (which calls
   `Agent.set_state(messages: _)`) does not spuriously persist state.
 
