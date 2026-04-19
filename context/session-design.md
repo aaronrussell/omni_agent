@@ -183,35 +183,53 @@ separate `next_id` field is stored.
 
 ## Storage
 
-### Store struct
+### Module shape
 
-Session holds a `%Store{}` threaded from `start_link`:
+`Omni.Session.Store` is a **single module** holding both the adapter
+behaviour (callbacks) and the dispatch functions. Adapter implementations
+`@behaviour Omni.Session.Store`; callers invoke the dispatch functions
+directly.
+
+A "store" is a `{module, keyword()}` tuple — the adapter and its config.
+This is the canonical shape everywhere: `Session.start_link` accepts it,
+`Omni.Session.Store.*` dispatch functions take it as the first argument,
+and applications stash it wherever they like.
 
 ```elixir
-%Omni.Session.Store{adapter: module(), config: term()}
-```
+# Type
+@type t :: {module(), keyword()}
 
-Session never calls the adapter module directly. It calls `Store` dispatch
-functions that route the call with config bound:
+# Passed to Session at start time
+Session.start_link(store: {Omni.Session.Store.FileSystem, base_path: "/data"}, ...)
 
-```elixir
+# Dispatched from Session internals
 Omni.Session.Store.save_tree(store, session_id, tree, opts)
 Omni.Session.Store.save_state(store, session_id, state_map, opts)
 Omni.Session.Store.load(store, session_id, opts)
 Omni.Session.Store.list(store, opts)
 Omni.Session.Store.delete(store, session_id, opts)
+
+# Called directly by applications (e.g. for deletion)
+Omni.Session.Store.delete({Omni.Session.Store.FileSystem, base_path: "/data"}, "abc")
 ```
 
-This mirrors patterns like `Ecto.Adapter` or `Plug`: behaviour-defined
-adapter, dispatch module handles config threading.
+No global `Application.env` fallback. Applications holding store config
+centrally wrap it in their own helper (e.g. `MyApp.Storage.store/0`).
 
 ### Adapter behaviour
 
 ```elixir
-defmodule Omni.Session.Store.Adapter do
-  @type config :: term()
+defmodule Omni.Session.Store do
+  @type t :: {module(), keyword()}
   @type session_id :: String.t()
-  @type state_map :: map()
+
+  @type state_map :: %{
+          optional(:model)  => Omni.Model.ref(),
+          optional(:system) => String.t() | nil,
+          optional(:opts)   => keyword(),
+          optional(:title)  => String.t() | nil
+        }
+
   @type session_info :: %{
           id:         session_id(),
           title:      String.t() | nil,
@@ -219,43 +237,94 @@ defmodule Omni.Session.Store.Adapter do
           updated_at: DateTime.t()
         }
 
-  @callback save_tree(config, session_id, Omni.Session.Tree.t(), opts :: keyword()) ::
+  @callback save_tree(config :: term(), session_id(), Omni.Session.Tree.t(), keyword()) ::
               :ok | {:error, term()}
 
-  @callback save_state(config, session_id, state_map(), opts :: keyword()) ::
+  @callback save_state(config :: term(), session_id(), state_map(), keyword()) ::
               :ok | {:error, term()}
 
-  @callback load(config, session_id, opts :: keyword()) ::
+  @callback load(config :: term(), session_id(), keyword()) ::
               {:ok, Omni.Session.Tree.t(), state_map()} | {:error, :not_found}
 
-  @callback list(config, opts :: keyword()) ::
-              {:ok, [session_info()]}
+  @callback list(config :: term(), keyword()) :: {:ok, [session_info()]}
 
-  @callback delete(config, session_id, opts :: keyword()) ::
+  @callback delete(config :: term(), session_id(), keyword()) ::
               :ok | {:error, term()}
+
+  # Dispatch — callers invoke these; adapter module is the first element of
+  # the tuple, config is the second.
+  def save_tree({mod, config}, id, tree, opts \\ []),
+    do: mod.save_tree(config, id, tree, opts)
+
+  # ... save_state, load, list, delete follow the same pattern
 end
 ```
 
-Adapter config is captured once at `Session.start_link` time (e.g.,
-`store: {FileSystem, base_path: "/data"}` resolves to `%Store{adapter:
-FileSystem, config: [base_path: "/data"]}`). It does not appear in
-per-call `opts`.
+`list/2` **must** honour `:limit` and `:offset` in `opts`:
+
+- `:limit` — maximum number of results. Unlimited if absent.
+- `:offset` — number of results to skip from the start. Defaults to 0.
+
+Results are ordered by `updated_at` descending. Other filter options
+(e.g. title substring, date range) are adapter-specific and live in the
+same `opts` keyword — undefined opts are ignored.
+
+Error reasons returned from `save_tree`, `save_state`, and `delete` are
+adapter-specific. POSIX atoms (e.g. `:enoent`, `:eacces`) from
+filesystem-backed adapters bubble up unwrapped.
+
+### `state_map` shape
+
+The four Session-owned keys:
+
+```elixir
+%{
+  model:  Omni.Model.ref(),    # {:anthropic, "claude-sonnet-4-5"}
+  system: String.t() | nil,
+  opts:   keyword(),            # canonicalised (sorted) Omni opts
+  title:  String.t() | nil
+}
+```
+
+Prescribed, not free-form. Session is the sole caller of `save_state`,
+and always passes the **full** subset — overwrite semantics, no partial
+or merge operations at the behaviour level. `load/2` may return a map
+with only a subset of keys present (e.g. a session that's had `set_title`
+called but no agent config persisted yet); Session's load-mode resolution
+merges against start opts.
+
+Apps needing additional per-session metadata should wait on the `:data`
+field on Agent state (parked).
+
+### State categories and disjoint-keys merge
+
+Persisted state falls into two categories:
+
+| Category | Source | Write path | Trigger |
+|---|---|---|---|
+| Tree (nodes + path + cursors) | `%Omni.Session.Tree{}` | `save_tree` | Turn commits, navigation |
+| State map (model/system/opts/title) | Agent config + Session title | `save_state` | Agent `:state` events (change-detected), `set_title/2` |
+
+The two write paths operate on **disjoint keys**. Adapters that store
+both in a single file or row (the FileSystem reference does) can safely
+read-modify-write each side without conflict — this is not a semantic
+merge, just splatting disjoint keys onto a previously-persisted record.
+
+All writes go through the Session GenServer's mailbox and are serialised.
+There is no concurrent-write scenario for a given session.
 
 ### Adapter data boundary
 
-The adapter boundary is **Elixir terms**. Adapters may serialize to JSON,
-ETF, DETS, SQL, or anything else. `Omni.Codec` (from the `omni` package)
-is an optional helper for adapters that want JSON-compatible output —
-adapters are not required to use it.
+The adapter boundary is **Elixir terms**. `save_tree` receives an
+`%Omni.Session.Tree{}`; `save_state` receives a `state_map` with the
+prescribed keys (or a subset). Adapters may serialise to JSON, ETF,
+DETS, SQL, or anything else.
 
-Consequences:
-
-- A JSONL filesystem adapter runs inputs through `Omni.Codec.encode`
-  before writing.
-- A DETS/Mnesia/ETS-backed adapter persists terms directly.
-- Adapters may freely split the persisted `state_map` across multiple
-  tables/files as they see fit. The Session treats the whole map opaquely
-  on the round trip.
+`Omni.Codec` (from the `omni` package) is a helper for adapters that
+want JSON-compatible output without losing Elixir-term fidelity — it
+handles `Omni.Message` and `Omni.Usage` structs directly, and exposes
+`encode_term`/`decode_term` for arbitrary terms. Adapters are not
+required to use it.
 
 ### Persistence triggers (category-dependent)
 
@@ -374,6 +443,74 @@ the user can wrap their adapter in a Task queue themselves or we revisit.
 5. Start the Agent (linked) with the reconciled state.
 6. Set Session's `tree` from the loaded tree.
 7. Go idle, ready to `prompt`.
+
+### FileSystem reference adapter
+
+`Omni.Session.Store.FileSystem` is the reference implementation shipped
+with the package. Per-session directory with two files:
+
+```
+base_path/
+  {session_id}/
+    nodes.jsonl     # tree nodes, one JSON-encoded node per line
+    session.json    # path, cursors, state_map fields, timestamps
+```
+
+**`nodes.jsonl`.** Append-only when `:new_node_ids` is passed in `opts`;
+full rewrite when absent. One node per line:
+
+```json
+{"id": 1, "parent_id": null, "message": {...}, "usage": {...}}
+```
+
+`message` and `usage` are serialised via `Omni.Codec.encode/1`.
+
+**`session.json`.** Single merged file, written by both `save_tree`
+(path + cursors + `updated_at`) and `save_state` (state_map fields +
+`updated_at`). Keys are disjoint; merge is read-modify-write.
+
+```json
+{
+  "path": [1, 3, 5],
+  "cursors": [[1, 3], [3, 5]],
+  "title": "My conversation",
+  "model": ["anthropic", "claude-sonnet-4-5"],
+  "system": "You are helpful.",
+  "opts": {"__etf": "..."},
+  "created_at": "2026-04-19T12:34:56Z",
+  "updated_at": "2026-04-19T12:40:00Z"
+}
+```
+
+Per-field encoding:
+
+| Field | Encoding | Notes |
+|---|---|---|
+| `path` | JSON array of integers | |
+| `cursors` | JSON array of `[k, v]` pairs | JSON maps can't key on integers |
+| `title` | JSON string or `null` | |
+| `model` | `[provider_string, model_id]` | Decoded via safe atom lookup against `Omni.Model` provider set |
+| `system` | JSON string or `null` | |
+| `opts` | `Omni.Codec.encode_term/1` wrapper | Keyword list with atoms and arbitrary values |
+| `created_at`, `updated_at` | ISO8601 strings | Adapter-managed |
+
+**Load behaviour.**
+
+- `session.json` missing → `{:error, :not_found}`.
+- `session.json` present but `nodes.jsonl` missing → `{:ok, %Tree{},
+  state_map}`. Valid early state, e.g. `set_title` called before the
+  first prompt.
+- Partial `state_map` keys in `session.json` are returned as-is. Missing
+  keys aren't defaulted — Session's load-mode resolution merges against
+  start opts.
+
+**Configuration.** `base_path` in the config keyword list:
+
+```elixir
+{Omni.Session.Store.FileSystem, base_path: "/path/to/sessions"}
+```
+
+No default; the adapter raises on an unset `:base_path`.
 
 ---
 
@@ -771,18 +908,13 @@ Items worth revisiting during implementation:
    `{:error, :invalid_key}`? Agent's `get_state/2` precedent should be
    followed.
 
-4. **Store `list/1` filtering.** Should `list` accept filters (by title
-   substring, date range, etc.), or is that purely adapter-specific?
-   Current signature is `list(config, opts) :: {:ok, [session_info()]}`
-   with `opts` as the extension point. Leave flexible.
-
-5. **Streaming-time partial events on late-join.** The snapshot captures
+4. **Streaming-time partial events on late-join.** The snapshot captures
    `agent.partial` at subscribe time. Is there a subsequent `:text_delta`
    event that overlaps with the delta already represented in `partial`?
    Verify this works cleanly with the Agent's snapshot+subscribe
    atomicity.
 
-6. **Naming ambiguity with OTP.** `Omni.Session` collides with nothing in
+5. **Naming ambiguity with OTP.** `Omni.Session` collides with nothing in
    standard lib, but "session" is an overloaded term. Brief check that
    nothing in the Elixir ecosystem uses this name in a way that would
    clash in common client code (unlikely, but worth five minutes of
@@ -827,16 +959,19 @@ adapter.
 
 **Key work:**
 
-- `Omni.Session.Store` dispatch module.
-- `Omni.Session.Store.Adapter` behaviour with the five callbacks.
-- `%Omni.Session.Store{}` struct with `adapter` and `config` fields.
-- `Omni.Session.Store.FileSystem` — reference adapter using a
-  per-session directory with `nodes.jsonl` (append-only) and `state.json`
-  (overwrite). Uses `Omni.Codec` for serialization of Elixir terms to
-  JSON.
-- Integration tests: create, save_tree (append), save_state (overwrite),
-  load (round trip), list, delete, error scenarios (disk full, permission
-  denied).
+- `Omni.Session.Store` — single module holding the behaviour callbacks
+  (`save_tree`, `save_state`, `load`, `list`, `delete`) and the dispatch
+  functions. Canonical store shape is `{module, keyword()}`.
+- `list/2` mandates `:limit` and `:offset` in `opts`.
+- `Omni.Session.Store.FileSystem` reference adapter: per-session
+  directory with `nodes.jsonl` (append-only, via `:new_node_ids` hint)
+  and `session.json` (disjoint-keys merge written by both `save_tree`
+  and `save_state`). `Omni.Codec` for message/usage serialisation;
+  `model` encoded as plain JSON `[provider, id]` for inspectability;
+  `opts` ETF-wrapped.
+- Integration tests: create, save_tree (append + full rewrite), save_state
+  (overwrite), load (round trip, partial state_map, empty-tree case),
+  list (pagination, ordering), delete, error scenarios.
 
 **Dependencies:** Phase 5.
 

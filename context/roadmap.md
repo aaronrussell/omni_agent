@@ -61,39 +61,23 @@ multi-root trees), and `extend/1`. Structural queries (`children`,
 views (`messages`, `usage`, `head`, `size`), `new/1` hydration
 constructor, and `Enumerable` over the active path.
 
----
-
-## Phase 6 — Session: Store behaviour + reference adapter
-
-**Status:** Not started.
+### Phase 6 — Session: Store behaviour + FileSystem adapter *(done)*
 
 **Spec:** `session-design.md` (Storage).
 
-**Goal:** Define the storage adapter contract and ship a reference
-filesystem adapter.
-
-**Key work:**
-
-- `Omni.Session.Store` dispatch module.
-- `Omni.Session.Store.Adapter` behaviour (`save_tree`, `save_state`,
-  `load`, `list`, `delete`).
-- `%Omni.Session.Store{adapter, config}` struct threaded from Session
-  start options.
-- `Omni.Session.Store.FileSystem` reference adapter: per-session
-  directory, `nodes.jsonl` append-only log, `state.json` overwrite blob,
-  `Omni.Codec` for term ⇄ JSON.
-- Integration tests: create, save_tree (append with `:new_node_ids`),
-  save_state (overwrite), load (round trip), list, delete, error
-  scenarios.
-
-**Dependencies:** Phase 5.
-
-**Acceptance:**
-
-- Filesystem adapter round-trips a tree with branches and metadata
-  losslessly.
-- Adapter behaviour documented clearly enough that SQLite / Postgres /
-  other adapters could be implemented from the spec alone.
+Shipped `Omni.Session.Store` as a single module combining the adapter
+behaviour (`save_tree`, `save_state`, `load`, `list`, `delete`) and the
+dispatch functions. Canonical store shape is `{module, keyword()}` —
+no struct, no global Application-env fallback; apps wrap their own
+helper around the tuple. `list/2` mandates `:limit` and `:offset`;
+Session-owned `state_map` is the prescribed four-key schema
+(`:model`, `:system`, `:opts`, `:title`) with overwrite semantics.
+Reference adapter `Omni.Session.Store.FileSystem` persists each session
+to a directory with `nodes.jsonl` (append-only via `:new_node_ids`
+hint) and `session.json` (disjoint-keys merge between `save_tree` and
+`save_state`), using `Omni.Codec` for messages/usage/opts. Switched
+the `omni` dep to a path dep to consume `Omni.Codec` ahead of its
+release.
 
 ---
 
