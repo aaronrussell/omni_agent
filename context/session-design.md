@@ -101,13 +101,13 @@ Out of scope (belongs to `Omni.Session.Manager` or application layer):
   agent:                  pid(),
   subscribers:            MapSet.t(pid()),
   last_persisted_state:   map() | nil,
-  regen_target:           Omni.Session.Tree.node_id() | nil
+  regen_source:           Omni.Session.Tree.node_id() | nil
 }
 ```
 
 Only `id` and `title` are Session-owned fields visible in persistence.
 Everything else is either runtime bookkeeping (`agent`, `subscribers`,
-`regen_target`), derived state (`tree`, rehydrated on load), or
+`regen_source`), derived state (`tree`, rehydrated on load), or
 change-detection scaffolding (`last_persisted_state`).
 
 **Deliberately absent:**
@@ -367,8 +367,8 @@ a `save_state` is triggered through the same digest mechanism.
 | `cancel/1` | no | no |
 | `resume/2` (eventual `:turn`) | yes | no |
 | `navigate/2` | yes (no `new_node_ids`) | no |
-| `branch/3` | yes on nav, yes on `:turn` | no |
-| `regen/2` | yes on nav, yes on `:turn` | no |
+| `branch/2` (regen) | yes on nav, yes on `:turn` | no |
+| `branch/3` (edit) | yes on nav, yes on `:turn` | no |
 | `set_agent/2,3` (model/system/opts) | no | yes (via `:state` event) |
 | `set_agent/2,3` (tools/private) | no | no (not in persistable subset) |
 | `set_title/2` | no | yes |
@@ -634,16 +634,22 @@ Session.start_link(subscribers: [pid1, pid2], ...) # subscribes given pids
 
 ---
 
-## Navigation & regeneration
+## Navigation & branching
 
-All three operations are Session-only concepts (the Agent has no notion
-of a tree). Each mutates the tree and synchronizes the Agent via
+Session-only concepts (the Agent has no notion of a tree). Both
+operations mutate the tree and synchronize the Agent via
 `Agent.set_state(messages: path_messages)`.
+
+All navigation and branching is **idle-only**. When a turn is in
+flight (`:running` or `:paused`), these calls return
+`{:error, :not_idle}` — use `cancel/1` or wait for the `:turn` event
+first. Plain `prompt/2,3` continues to stage for steering when not
+idle; navigation and branching do not.
 
 ### `navigate/2`
 
 ```elixir
-Session.navigate(session, node_id) :: :ok | {:error, :not_found}
+Session.navigate(session, node_id) :: :ok | {:error, :not_found | :not_idle}
 ```
 
 Sets the active path by walking parent pointers from `node_id` back to
@@ -651,58 +657,97 @@ root. Updates `cursors` for each node along the path (remembers which
 child was last active). Triggers `Agent.set_state(messages: ...)` with
 the path messages. Emits `:tree` event with empty `new_nodes`.
 
-### `branch/3`
+### `branch/2,3`
 
-```elixir
-Session.branch(session, parent_node_id, content) :: :ok | {:error, reason}
-```
+A single primitive, "branch from this node." The arity and the target
+node's role determine the semantics:
 
-A branch is semantically "navigate to a node, then prompt from there with
-new content." Equivalent to:
+| Call | Target role | Effect |
+|---|---|---|
+| `branch(session, user_id)` | user | Regenerate the turn rooted at this user message. Same content, new assistant response. |
+| `branch(session, assistant_id, content)` | assistant | Extend from this assistant with new user `content`. Creates a new user + its turn as children of the assistant. |
+| `branch(session, nil, content)` | — | Create a disjoint new root with the given user `content`. Atomic equivalent of `navigate(session, nil)` + `prompt(session, content)`. |
 
-```elixir
-:ok = Session.navigate(session, parent_node_id)
-:ok = Session.prompt(session, content)
-```
+Other role/arity combinations error:
 
-Provided as a single call for clarity and atomicity (both operations
-happen before any event fires from either).
+- `branch/2` on a non-user target → `{:error, :not_user_node}`
+- `branch/3` on a non-assistant, non-nil target → `{:error, :not_assistant_node}`
+- Either arity on an unknown node → `{:error, :not_found}`
+- Either arity while not idle → `{:error, :not_idle}`
 
-### `regen/2`
+The rule is consistent: **"branch from X" always means X is the parent
+of the new branch.** `branch/2` reuses the target's content, `branch/3`
+requires new content. Since a valid conversation alternates user and
+assistant messages, the target's role uniquely determines which arity
+is legal.
 
-```elixir
-Session.regen(session, assistant_node_id) :: :ok | {:error, reason}
-```
+Applications build higher-level UI concepts (edit a user message,
+regenerate an assistant response) on top of this primitive — typically
+by mapping an assistant-id click to `branch(parent_of_assistant)` for
+regen, and a user-id click to `branch(parent_of_user, new_content)` for
+edit.
 
-Regenerate an assistant message with a fresh LLM call, using the same
-user message that originally prompted it.
+**`branch/2` mechanics (regenerate a user's turn):**
 
-Mechanics:
+1. Validate target is a user node; error otherwise.
+2. Tree: set active path to include `user_id` (ends on the user).
+   Cursors update along the path.
+3. Agent: `set_state(messages: path_to(user_id) |> drop_last)` — agent
+   sees the path up to but not including the user (ends on an assistant,
+   or empty if the user is root).
+4. Session records `regen_source = user_id`.
+5. `Agent.prompt(agent, content_of(user_id))`.
+6. Emit `:tree` with empty `new_nodes` (path changed, no new nodes yet).
+7. On the resulting `:turn {:stop | :continue, response}` event, drop
+   the leading user message from `response.messages` (it duplicates
+   `user_id`) and push the remainder as children of `user_id`. Clear
+   `regen_source`. Emit `:tree` with `new_nodes`.
+8. On `:cancelled` or `:error`, clear `regen_source` without tree
+   mutation. Tree path remains on `user_id`; the agent is idle again,
+   and a subsequent call (navigate, branch, or prompt) will resync.
 
-1. Validate `assistant_node_id` targets an assistant-role node. Error
-   `{:error, :not_assistant_node}` otherwise.
-2. Let `user_node_id = parent(assistant_node_id)` (always a user message
-   by tree invariants).
-3. Let `path = path_to(tree, user_node_id) |> drop_last` — messages up to
-   but not including the user. This ends on an assistant message (or is
-   empty if the user is root), satisfying Agent's messages invariant.
-4. `Agent.set_state(agent, messages: messages_from(path))`.
-5. Session sets `regen_target = user_node_id`.
-6. `Agent.prompt(agent, content_of(user_node_id))`.
-7. On the resulting `:turn {:stop | :continue, response}` event, Session
-   pushes `tl(response.messages)` into the tree as children branching
-   from `user_node_id`. The first message (the duplicated user prompt) is
-   dropped since `user_node_id` already exists. `regen_target` is cleared.
-8. On `:cancelled` or `:error`, `regen_target` is cleared without tree
-   mutation.
+During steps 3–7 the tree path (ends on user) and the agent's messages
+(end on user's parent) are deliberately out of sync. This resolves at
+turn commit. Subscribers observing in-flight streaming should use the
+agent snapshot's `pending`/`partial` for the in-flight view, as
+specified in Snapshot.
 
-Edge cases:
+If the turn produces a `{:continue, _}` mid-regen, the drop-leading-user
+rule applies only to the first segment. Continuation segments push
+normally from the head of the active path (the last message pushed in
+the previous segment), not from `user_id`. `regen_source` is cleared
+after the first segment.
 
-- If `user_node_id` is root, `path` is empty; `Agent.set_state(messages:
-  [])` is valid.
-- If the turn produces a `{:continue, _}` mid-regen, continuation segments
-  push normally as children of the previous pushed message, not of
-  `user_node_id`. `regen_target` is cleared after the first segment.
+**`branch/3` mechanics (extend from an assistant):**
+
+1. Validate target is an assistant node; error otherwise.
+2. Tree: set active path to `assistant_id` (ends on the assistant).
+3. Agent: `set_state(messages: path_to(assistant_id))` — same path as
+   the tree.
+4. `Agent.prompt(agent, content)`.
+5. Emit `:tree` with empty `new_nodes`.
+6. On the resulting `:turn`, push all of `response.messages` as
+   children of `assistant_id`. No drop applies. Emit `:tree` with
+   `new_nodes`.
+7. On `:cancelled` or `:error`, no tree mutation beyond the path
+   change in step 2.
+
+### Cursor updates on branch
+
+Any mutation that changes the active path updates cursors. After a
+`branch` turn commits, the cursor at the divergence point (the target
+node) points to the first newly-pushed child. The new branch becomes
+the default when navigating back to an ancestor and calling `extend/1`
+— the intuition being "the most recent action is what you want next."
+
+### Root and edge cases
+
+- `branch/2` on a root user: agent messages = `[]`. Prompt with the
+  user's content; turn's leading user is dropped; rest pushed as
+  children of the root user.
+- `branch(session, nil, content)` is the sugared form of
+  `navigate(session, nil)` + `prompt(session, content)` — it clears
+  the active path and prompts, producing a new disjoint root.
 
 ---
 
@@ -724,8 +769,10 @@ Delegates to the wrapped Agent:
 ### Navigation
 
 - `navigate(session, node_id)`
-- `branch(session, parent_node_id, content)`
-- `regen(session, assistant_node_id)`
+- `branch(session, user_node_id)` — regenerate the turn rooted at this
+  user message.
+- `branch(session, assistant_node_id, content)` — extend from this
+  assistant with new user content (edit the next user message).
 
 ### Mutation
 
@@ -799,8 +846,10 @@ auto-generated IDs use the built-in helper.
 | `{:error, :not_found}` | `load:` id not in store |
 | `{:error, :no_model}` | `load:` resolution can't produce a model |
 | `{:error, :initial_messages_not_supported}` | `new:` with `agent: [messages: _]` |
-| `{:error, :not_assistant_node}` | `regen/2` target isn't an assistant node |
-| `{:error, :not_found}` | `navigate/2` to unknown node |
+| `{:error, :not_idle}` | `navigate/2` or `branch/2,3` called during a running or paused turn |
+| `{:error, :not_found}` | `navigate/2` or `branch/2,3` to unknown node |
+| `{:error, :not_user_node}` | `branch/2` target isn't a user node |
+| `{:error, :not_assistant_node}` | `branch/3` target isn't an assistant node |
 | `{:error, reason}` from Agent | forwarded verbatim |
 
 The duplicate-id race on `new:` with explicit id is **accepted as a known
@@ -890,31 +939,17 @@ capability — parked.
 
 Items worth revisiting during implementation:
 
-1. **Branch ergonomics for the first user message.** `branch/3` takes a
-   `parent_node_id` and new content. For branching off an assistant
-   message (the typical "retry from here" UX), does the caller pass the
-   assistant's node id and Session interprets it as "navigate to it, then
-   prompt"? Or does the caller pass the user's node id's *parent* and
-   Session extends from there? Current wording assumes the former. Worth
-   confirming against a concrete UI flow.
-
-2. **Cursor update semantics on branch.** When a new branch is created,
-   should `cursors` point to the new branch (so navigation back to the
-   parent picks up the new branch by default) or preserve the previous
-   cursor (so the old branch remains default)? Intuition says update to
-   new; worth confirming.
-
-3. **`get_agent/2` key validation.** Should invalid keys return `nil` or
+1. **`get_agent/2` key validation.** Should invalid keys return `nil` or
    `{:error, :invalid_key}`? Agent's `get_state/2` precedent should be
    followed.
 
-4. **Streaming-time partial events on late-join.** The snapshot captures
+2. **Streaming-time partial events on late-join.** The snapshot captures
    `agent.partial` at subscribe time. Is there a subsequent `:text_delta`
    event that overlaps with the delta already represented in `partial`?
    Verify this works cleanly with the Agent's snapshot+subscribe
    atomicity.
 
-5. **Naming ambiguity with OTP.** `Omni.Session` collides with nothing in
+3. **Naming ambiguity with OTP.** `Omni.Session` collides with nothing in
    standard lib, but "session" is an overloaded term. Brief check that
    nothing in the Elixir ecosystem uses this name in a way that would
    clash in common client code (unlikely, but worth five minutes of
@@ -1015,31 +1050,46 @@ persistence, pub/sub.
 - Concurrent subscribers receive identical event streams.
 - Store errors do not halt the session; `:store {:error, _}` events fire.
 
-### Phase 8 — Navigation, regen, and mutation APIs
+### Phase 8 — Navigation, branching, and mutation APIs
 
-**Goal:** Branching navigation, regeneration, and the full mutation
-surface.
+**Goal:** Branching navigation and the full mutation surface.
 
 **Key work:**
 
-- `navigate/2`, `branch/3`, `regen/2` with `regen_target` flag.
-- `set_agent/2,3` delegation to `Agent.set_state`.
+- `navigate/2` — idle-only; sets tree path + agent messages; emits
+  `:tree` with empty `new_nodes`.
+- `branch/2` (regen) — validates user target; navigates tree path to
+  the user; sets agent messages to the user's parent path; prompts
+  with the user's content; on `:turn`, drops the leading duplicate
+  user from the response and pushes the rest as children of the
+  target. Internal `regen_source` flag drives the drop.
+- `branch/3` (edit) — validates assistant target; navigates tree path
+  to the assistant; prompts with the new content; on `:turn`, pushes
+  all messages as children of the target.
 - `set_title/2` with `:title` event + `save_state`.
 - `add_tool/2`, `remove_tool/2`.
-- `:tree` events on all tree mutations.
-- Tests: navigate-then-prompt creates branch; regen produces sibling
-  assistant; cursors track latest-active-child; title persistence survives
-  restart; set_agent(model) change-detection avoids spurious saves on
-  navigation.
+- `:tree` events on all tree mutations (navigation, branch initiation,
+  turn commit).
+- Tests: `branch/3` produces a sibling user+turn under an assistant;
+  `branch/2` produces a sibling assistant under a user; cursors track
+  latest-active-child after branch; idle gate errors on non-idle;
+  title persistence survives restart; `set_agent(model)` change-
+  detection avoids spurious saves on navigation.
 
 **Dependencies:** Phase 7.
 
 **Acceptance:**
 
-- Branching UX flow: prompt A, get response; navigate back to A; prompt
-  B (branches from A); verify tree structure and store contents.
-- Regen UX flow: regen an assistant node; verify original is preserved,
-  new assistant is sibling, cursor updated.
+- Edit flow: prompt A, get response A'; `branch(A', "new content")`
+  creates a new user sibling under A' with its own assistant response;
+  tree structure and store contents verified.
+- Regen flow: `branch(user_id)` produces a sibling assistant under the
+  same user; original preserved; cursor updated to the new branch.
+- Cursor navigation: navigate away and back preserves previous branch
+  via cursors; after a branch, the new branch is the default on
+  extend.
+- Idle gate: navigate/branch during a running or paused turn returns
+  `{:error, :not_idle}`.
 - All mutation APIs covered with tests.
 
 ---

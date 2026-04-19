@@ -1,0 +1,229 @@
+defmodule Omni.Session.BranchTest do
+  use Omni.Session.SessionCase, async: true
+
+  alias Omni.Agent.TestAgents.PauseAgent
+
+  @moduletag :tmp_dir
+
+  describe "branch/3 (edit — target an assistant with new content)" do
+    test "creates a new user+turn branching off the target assistant", ctx do
+      {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
+
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+      # Tree: [u1 → a2]. Now branch off a2 with new content.
+
+      :ok = Session.branch(session, 2, "B'")
+      events = collect_session_events(session)
+
+      # One :tree with empty new_nodes (navigate); one with new_nodes
+      # from the turn commit.
+      tree_events = Enum.filter(events, &match?({:tree, _}, &1))
+      assert length(tree_events) == 2
+      assert {_, %{new_nodes: []}} = hd(tree_events)
+      assert {_, %{new_nodes: [u_id, a_id]}} = List.last(tree_events)
+
+      tree = Session.get_tree(session)
+      # a2 now has one child: the new user message.
+      assert Tree.children(tree, 2) == [u_id]
+      # New user has one child: new assistant.
+      assert Tree.children(tree, u_id) == [a_id]
+      # Cursor at a2 points to the new user branch.
+      assert tree.cursors[2] == u_id
+      # Active path ends on new assistant.
+      assert Tree.head(tree) == a_id
+    end
+
+    test "target is a user node: returns :not_assistant_node", ctx do
+      {session, _} = start_session(ctx)
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+
+      # Node 1 is the user root.
+      assert {:error, :not_assistant_node} = Session.branch(session, 1, "B")
+    end
+
+    test "unknown id: returns :not_found", ctx do
+      {session, _} = start_session(ctx)
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+
+      assert {:error, :not_found} = Session.branch(session, 999, "B")
+    end
+
+    test "nil target: creates a disjoint new root with the given content", ctx do
+      {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
+
+      :ok = Session.prompt(session, "first root")
+      _ = collect_session_events(session)
+      # Tree: [u1 → a2]
+
+      :ok = Session.branch(session, nil, "second root")
+      events = collect_session_events(session)
+
+      # :tree with no new_nodes (navigate to nil) + :tree with two new
+      # nodes (turn commit of new root turn).
+      tree_events = Enum.filter(events, &match?({:tree, _}, &1))
+      assert length(tree_events) == 2
+      assert {_, %{new_nodes: [u_id, a_id]}} = List.last(tree_events)
+
+      tree = Session.get_tree(session)
+      assert Enum.sort(Tree.roots(tree)) == [1, u_id]
+      assert Tree.get_node(tree, u_id).parent_id == nil
+      assert Tree.get_node(tree, u_id).message.role == :user
+      assert Tree.get_node(tree, a_id).parent_id == u_id
+      assert Tree.get_node(tree, a_id).message.role == :assistant
+    end
+  end
+
+  describe "branch/2 (regen — target a user, reuse its content)" do
+    test "pushes a sibling assistant as a child of the user", ctx do
+      {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
+
+      :ok = Session.prompt(session, "ask")
+      _ = collect_session_events(session)
+      # Tree: [u1 → a2]. Now regen the turn of u1.
+
+      original_assistant_id = Tree.head(Session.get_tree(session))
+      assert original_assistant_id == 2
+
+      :ok = Session.branch(session, 1)
+      events = collect_session_events(session)
+
+      tree_events = Enum.filter(events, &match?({:tree, _}, &1))
+      # Navigate fires one :tree; turn commits another.
+      assert length(tree_events) == 2
+      # Turn commit should only push ONE new node (leading user dropped).
+      assert {_, %{new_nodes: [new_a_id]}} = List.last(tree_events)
+
+      tree = Session.get_tree(session)
+      # u1 now has two assistant children.
+      assert Enum.sort(Tree.children(tree, 1)) == Enum.sort([original_assistant_id, new_a_id])
+      # Cursor at u1 is the new assistant.
+      assert tree.cursors[1] == new_a_id
+      # Active path ends on the new assistant.
+      assert Tree.head(tree) == new_a_id
+      # Original assistant message is still present, unmutated.
+      assert Tree.get_node(tree, original_assistant_id) != nil
+    end
+
+    test "clears regen_source after the first turn commit", ctx do
+      {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
+
+      :ok = Session.prompt(session, "ask")
+      _ = collect_session_events(session)
+
+      :ok = Session.branch(session, 1)
+      _ = collect_session_events(session)
+
+      assert :sys.get_state(session).regen_source == nil
+    end
+
+    test "root user regen: agent messages are empty; first turn drops duplicate", ctx do
+      {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
+
+      :ok = Session.prompt(session, "root")
+      _ = collect_session_events(session)
+      # u1 is root.
+
+      :ok = Session.branch(session, 1)
+      _ = collect_session_events(session)
+
+      tree = Session.get_tree(session)
+      # u1 still has exactly one user with two assistant children.
+      children = Tree.children(tree, 1)
+      assert length(children) == 2
+
+      Enum.each(children, fn id ->
+        assert Tree.get_node(tree, id).message.role == :assistant
+      end)
+    end
+
+    test "target is an assistant node: returns :not_user_node", ctx do
+      {session, _} = start_session(ctx)
+      :ok = Session.prompt(session, "hi")
+      _ = collect_session_events(session)
+
+      assert {:error, :not_user_node} = Session.branch(session, 2)
+    end
+
+    test "unknown id: returns :not_found", ctx do
+      {session, _} = start_session(ctx)
+      :ok = Session.prompt(session, "hi")
+      _ = collect_session_events(session)
+
+      assert {:error, :not_found} = Session.branch(session, 999)
+    end
+  end
+
+  describe "idle gate" do
+    test "branch/2 during paused turn: returns :not_idle", ctx do
+      {session, _} =
+        start_session(ctx,
+          agent_module: PauseAgent,
+          agent_opts: [tools: [get_weather_tool()]],
+          fixture: @tool_use_fixture
+        )
+
+      :ok = Session.prompt(session, "Use the tool")
+      assert_receive {:session, ^session, :pause, _}, 1000
+
+      # Doesn't matter that node 1 exists — idle check short-circuits.
+      assert {:error, :not_idle} = Session.branch(session, 1)
+    end
+
+    test "branch/3 during paused turn: returns :not_idle", ctx do
+      {session, _} =
+        start_session(ctx,
+          agent_module: PauseAgent,
+          agent_opts: [tools: [get_weather_tool()]],
+          fixture: @tool_use_fixture
+        )
+
+      :ok = Session.prompt(session, "Use the tool")
+      assert_receive {:session, ^session, :pause, _}, 1000
+
+      assert {:error, :not_idle} = Session.branch(session, 2, "new")
+    end
+  end
+
+  describe "cancelled regen" do
+    test "cancelling a regen clears regen_source", ctx do
+      {session, _} =
+        start_session(ctx,
+          agent_module: PauseAgent,
+          agent_opts: [tools: [get_weather_tool()]],
+          fixtures: [@text_fixture, @tool_use_fixture]
+        )
+
+      # First turn establishes a user root (node 1) + assistant (node 2)
+      # via the text fixture.
+      :ok = Session.prompt(session, "Plain text")
+      _ = collect_session_events(session)
+      assert Session.get_agent(session, :status) == :idle
+
+      # Now regen node 1 — the second fixture is a tool-use response,
+      # which PauseAgent will pause on.
+      :ok = Session.branch(session, 1)
+      assert_receive {:session, ^session, :pause, _}, 1000
+
+      # regen_source is set during the in-flight regen.
+      assert :sys.get_state(session).regen_source == 1
+
+      :ok = Session.cancel(session)
+      assert_receive {:session, ^session, :cancelled, _}, 1000
+
+      # After cancel, regen_source is cleared.
+      assert :sys.get_state(session).regen_source == nil
+    end
+  end
+
+  defp get_weather_tool do
+    Omni.tool(
+      name: "get_weather",
+      description: "Gets the weather",
+      input_schema: %{type: "object", properties: %{location: %{type: "string"}}},
+      handler: fn _ -> "72F and sunny" end
+    )
+  end
+end

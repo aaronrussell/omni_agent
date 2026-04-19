@@ -105,49 +105,33 @@ per segment so each `:turn` event's `response.usage` is segment-scoped
 — multi-segment turns no longer double-count usage in the persisted
 tree.
 
----
+### Phase 8 — Session: navigation, branching, mutation APIs *(done)*
 
-## Phase 8 — Session: navigation, regen, mutation APIs
-
-**Status:** Not started.
-
-**Spec:** `session-design.md` (Navigation & regeneration, Public API
+**Spec:** `session-design.md` (Navigation & branching, Public API
 § Mutation).
 
-**Goal:** Branching navigation, regeneration semantics, and the full
-mutation surface.
-
-**Key work:**
-
-- `navigate/2`: set active path via parent-walk; update cursors;
-  `Agent.set_state(messages: ...)`; emit `:tree` with empty `new_nodes`.
-- `branch/3`: navigate + prompt, atomically surfaced as a single call.
-- `regen/2`: targets an assistant node; navigates to parent-of-user;
-  sets Agent messages; re-prompts with the original user content;
-  uses `regen_target` flag to drop the duplicated user message from the
-  resulting `:turn` response before tree commit.
-- `set_title/2`: updates title, triggers `save_state` via digest path,
-  emits `:title` event.
-- `add_tool/2`, `remove_tool/2`: helpers over `set_agent(:tools, ...)`
-  (tools are not persisted).
-- `:tree` events fire on every tree mutation (turn commits, navigation,
-  branch/regen initiation).
-
-Note: `set_agent/2,3` has already shipped with Phase 7.
-
-**Dependencies:** Phase 7.
-
-**Acceptance:**
-
-- Branching flow: prompt A, get response; navigate back to A; prompt B
-  (branches from A); tree structure and store contents verified.
-- Regen flow: regen assistant node; original preserved; new assistant
-  is sibling; cursor updated to new branch.
-- Cursor navigation: navigate away and back preserves previous branch
-  via cursors.
-- `set_title` survives restart.
-- Change-detection correctness: navigation (which calls
-  `Agent.set_state(messages: _)`) does not spuriously persist state.
+Shipped the full mutation surface on `Omni.Session`. `navigate/2` sets
+the active tree path by parent-walk (accepts `nil` to clear), updates
+cursors, resyncs the Agent via `set_state(messages: _)`, and emits
+`:tree` with empty `new_nodes`. A single `branch/2,3` primitive covers
+all branching: `branch(user_id)` regenerates a turn (navigate to the
+user, set agent messages to the user's parent path, prompt with the
+user's content; on the first `:turn` commit, drop the duplicate
+leading user via an internal `regen_source` flag); `branch(assistant_id,
+content)` edits the next user message (navigate to the assistant,
+prompt with new content, all turn messages append as children);
+`branch(nil, content)` creates a disjoint new root as the atomic
+equivalent of `navigate(nil)` + `prompt(content)`. All navigation and
+branching is idle-only — `{:error, :not_idle}` when a turn is in
+flight. `set_title/2` updates the title, emits `:title`, and flows
+through the same change-detection path as agent config to trigger
+`save_state`. `add_tool/2` / `remove_tool/2` are thin wrappers over
+`set_agent(:tools, _)`; tools remain non-persisted. `:tree` events
+fire on every tree mutation (turn commits, navigation, branch
+initiation). Tree path and agent messages are deliberately out of sync
+during an in-flight regen (tree ends on the user; agent ends on the
+user's parent), resolved at turn commit; cancelled or errored regens
+clear `regen_source` without tree mutation.
 
 ---
 

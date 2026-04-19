@@ -156,7 +156,8 @@ defmodule Omni.Session do
     :agent,
     subscribers: MapSet.new(),
     monitors: %{},
-    last_persisted_state: nil
+    last_persisted_state: nil,
+    regen_source: nil
   ]
 
   # -- Public API --
@@ -256,6 +257,76 @@ defmodule Omni.Session do
           :ok | {:error, :running} | {:error, term()}
   def set_agent(session, field, value_or_fun) when is_atom(field),
     do: GenServer.call(session, {:set_agent, field, value_or_fun})
+
+  @doc """
+  Sets the active path to the node at `node_id` (or clears it with `nil`).
+
+  Walks parent pointers from `node_id` back to root, updating cursors
+  along the way. The wrapped Agent is resynced via
+  `Omni.Agent.set_state(messages: _)` with the new path's messages.
+
+  Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
+  """
+  @spec navigate(GenServer.server(), Tree.node_id() | nil) ::
+          :ok | {:error, :not_found | :not_idle | term()}
+  def navigate(session, node_id), do: GenServer.call(session, {:navigate, node_id})
+
+  @doc """
+  Branches from `node_id`, reusing the target's user content to
+  regenerate its turn. `node_id` must reference a user node.
+
+  The active path ends on the user for the in-flight window; the Agent
+  sees messages up to and including the user's parent. On turn commit,
+  the leading (duplicate) user message is dropped and the remainder is
+  pushed as children of `node_id`.
+
+  Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
+  """
+  @spec branch(GenServer.server(), Tree.node_id()) ::
+          :ok | {:error, :not_found | :not_idle | :not_user_node | term()}
+  def branch(session, node_id), do: GenServer.call(session, {:branch, node_id})
+
+  @doc """
+  Branches from `node_id` with new user content.
+
+    * When `node_id` is an assistant node, the new user + its turn
+      appends as children of the assistant — "edit the next user
+      message."
+    * When `node_id` is `nil`, creates a new disjoint root with the
+      given content — the atomic equivalent of `navigate(session,
+      nil)` followed by `prompt(session, content)`.
+
+  Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
+  """
+  @spec branch(GenServer.server(), Tree.node_id() | nil, term()) ::
+          :ok | {:error, :not_found | :not_idle | :not_assistant_node | term()}
+  def branch(session, node_id, content),
+    do: GenServer.call(session, {:branch, node_id, content})
+
+  @doc """
+  Sets the session title. Emits a `:title` event and triggers a
+  `save_state` via the persistable-subset change-detection path (a
+  same-value set is a no-op).
+  """
+  @spec set_title(GenServer.server(), String.t() | nil) :: :ok
+  def set_title(session, title), do: GenServer.call(session, {:set_title, title})
+
+  @doc """
+  Appends a tool to the wrapped Agent's tools. Convenience over
+  `set_agent(:tools, _)`. Tools are not persisted.
+  """
+  @spec add_tool(GenServer.server(), Omni.Tool.t()) ::
+          :ok | {:error, :running} | {:error, term()}
+  def add_tool(session, tool), do: set_agent(session, :tools, &(&1 ++ [tool]))
+
+  @doc """
+  Removes the tool with the given name from the wrapped Agent. Silent
+  no-op if no matching tool exists.
+  """
+  @spec remove_tool(GenServer.server(), String.t()) ::
+          :ok | {:error, :running} | {:error, term()}
+  def remove_tool(session, tool_name) when is_binary(tool_name),
+    do: set_agent(session, :tools, &Enum.reject(&1, fn t -> t.name == tool_name end))
 
   # -- Init --
 
@@ -500,6 +571,76 @@ defmodule Omni.Session do
     {:reply, Agent.set_state(session.agent, field, value_or_fun), session}
   end
 
+  def handle_call({:navigate, node_id}, _from, session) do
+    with :ok <- require_idle(session),
+         {:ok, new_tree} <- Tree.navigate(session.tree, node_id),
+         messages = Tree.messages(new_tree),
+         :ok <- Agent.set_state(session.agent, messages: messages) do
+      session = %{session | tree: new_tree}
+      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
+      session = persist_tree(session, [])
+      {:reply, :ok, session}
+    else
+      {:error, _} = error -> {:reply, error, session}
+    end
+  end
+
+  def handle_call({:branch, node_id}, _from, session) do
+    with :ok <- require_idle(session),
+         {:ok, node} <- fetch_node(session.tree, node_id),
+         :ok <- require_role(node, :user, :not_user_node),
+         {:ok, new_tree} <- Tree.navigate(session.tree, node_id),
+         parent_messages = Enum.drop(Tree.messages(new_tree), -1),
+         :ok <- Agent.set_state(session.agent, messages: parent_messages) do
+      session = %{session | tree: new_tree, regen_source: node_id}
+      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
+      session = persist_tree(session, [])
+      :ok = Agent.prompt(session.agent, node.message.content)
+      {:reply, :ok, session}
+    else
+      {:error, _} = error -> {:reply, error, session}
+    end
+  end
+
+  def handle_call({:branch, nil, content}, _from, session) do
+    with :ok <- require_idle(session),
+         {:ok, new_tree} <- Tree.navigate(session.tree, nil),
+         :ok <- Agent.set_state(session.agent, messages: []) do
+      session = %{session | tree: new_tree}
+      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
+      session = persist_tree(session, [])
+      :ok = Agent.prompt(session.agent, content)
+      {:reply, :ok, session}
+    else
+      {:error, _} = error -> {:reply, error, session}
+    end
+  end
+
+  def handle_call({:branch, node_id, content}, _from, session) do
+    with :ok <- require_idle(session),
+         {:ok, node} <- fetch_node(session.tree, node_id),
+         :ok <- require_role(node, :assistant, :not_assistant_node),
+         {:ok, new_tree} <- Tree.navigate(session.tree, node_id),
+         messages = Tree.messages(new_tree),
+         :ok <- Agent.set_state(session.agent, messages: messages) do
+      session = %{session | tree: new_tree}
+      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
+      session = persist_tree(session, [])
+      :ok = Agent.prompt(session.agent, content)
+      {:reply, :ok, session}
+    else
+      {:error, _} = error -> {:reply, error, session}
+    end
+  end
+
+  def handle_call({:set_title, title}, _from, session) do
+    session = %{session | title: title}
+    broadcast(session, :title, title)
+    agent_state = Agent.get_state(session.agent)
+    session = persist_state_if_changed(agent_state, session)
+    {:reply, :ok, session}
+  end
+
   # -- Agent events --
 
   @impl GenServer
@@ -510,7 +651,8 @@ defmodule Omni.Session do
     # Compute the tree commit up front, but keep it off the session until
     # after the :turn event has been forwarded. Event order contract:
     # :turn → :tree → :store {:saved, :tree}.
-    {new_tree, new_node_ids} = compute_tree_commit(response, session.tree)
+    {messages, session} = consume_regen_source(response.messages, session)
+    {new_tree, new_node_ids} = compute_tree_commit(messages, response.usage, session.tree)
 
     broadcast(session, :turn, payload)
 
@@ -528,6 +670,15 @@ defmodule Omni.Session do
     broadcast(session, :state, new_state)
     session = persist_state_if_changed(new_state, session)
     {:noreply, session}
+  end
+
+  def handle_info(
+        {:agent, agent_pid, type, payload},
+        %{agent: agent_pid, regen_source: source} = session
+      )
+      when source != nil and type in [:cancelled, :error] do
+    broadcast(session, type, payload)
+    {:noreply, %{session | regen_source: nil}}
   end
 
   def handle_info({:agent, agent_pid, type, payload}, %{agent: agent_pid} = session) do
@@ -583,19 +734,18 @@ defmodule Omni.Session do
 
   # -- Tree commit --
 
-  # Append each message in the segment to the tree, attaching the
-  # segment's usage to the last assistant. Because the Agent now
-  # resets turn_usage per segment, response.usage is already the
-  # segment-scoped total — Tree.usage/1 sums correctly across
-  # multi-segment turns without double-counting.
-  defp compute_tree_commit(response, tree) do
-    messages = response.messages
+  # Append each segment message to the tree, attaching the segment's
+  # usage to the last assistant. Because the Agent resets turn_usage
+  # per segment, `usage` is already the segment-scoped total —
+  # Tree.usage/1 sums correctly across multi-segment turns without
+  # double-counting.
+  defp compute_tree_commit(messages, usage, tree) do
     last_assistant = find_last_assistant(messages)
 
     {tree, ids} =
       Enum.reduce(messages, {tree, []}, fn msg, {t, ids} ->
-        usage = if msg == last_assistant, do: response.usage, else: nil
-        {id, t2} = Tree.push_node(t, msg, usage)
+        u = if msg == last_assistant, do: usage, else: nil
+        {id, t2} = Tree.push_node(t, msg, u)
         {t2, [id | ids]}
       end)
 
@@ -607,6 +757,35 @@ defmodule Omni.Session do
     |> Enum.reverse()
     |> Enum.find(&(&1.role == :assistant))
   end
+
+  # Regen (`branch/2`) navigates the tree path to the target user and
+  # records the user's id in `regen_source`. On the first :turn commit
+  # after that, we drop the leading (duplicate) user from the response
+  # and clear the flag — continuation segments then push normally.
+  defp consume_regen_source(messages, %{regen_source: nil} = session),
+    do: {messages, session}
+
+  defp consume_regen_source([_duplicate_user | rest], session),
+    do: {rest, %{session | regen_source: nil}}
+
+  # -- Target validation --
+
+  defp require_idle(session) do
+    case Agent.get_state(session.agent, :status) do
+      :idle -> :ok
+      _ -> {:error, :not_idle}
+    end
+  end
+
+  defp fetch_node(tree, node_id) do
+    case Tree.get_node(tree, node_id) do
+      nil -> {:error, :not_found}
+      node -> {:ok, node}
+    end
+  end
+
+  defp require_role(%{message: %{role: role}}, role, _err), do: :ok
+  defp require_role(_node, _role, err), do: {:error, err}
 
   # -- Persistence --
 
