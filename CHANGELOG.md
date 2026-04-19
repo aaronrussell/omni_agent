@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **Messages invariant** — `set_state(:messages, ...)` and the state returned from `init/1` are validated to be empty or end with an `:assistant` message containing no `%ToolUse{}` blocks. Violations return `{:error, :invalid_messages}`.
 - **`:message` event** — `{:agent, pid, :message, %Message{}}` emitted each time a message is appended to pending: the initial user message, each assistant response after streaming, the tool-result user message, and the continuation user message. Fires after the streaming deltas for that message.
 - **`:state` event** — `{:agent, pid, :state, %State{}}` emitted after every successful `set_state/2,3` call, carrying the full new state.
+- **`Omni.Session.Tree`** — pure-data branching message tree used by the in-development `Omni.Session`. `%Tree{nodes, path, cursors}` with auto-assigned integer node IDs, append-only semantics, cursor-guided active path, `push/3`/`push_node/3`/`navigate/2`/`extend/1` for mutation (including `navigate(tree, nil)` to clear the path for multi-root trees), structural queries (`children/2`, `siblings/2`, `roots/1`, `path_to/2`, `get_node/2`, `get_message/2`), derived views (`messages/1`, `usage/1`, `head/1`, `size/1`), `new/1` hydration constructor, and `Enumerable` over the active path.
 
 ## [0.2.0] - 2026-04-02
 

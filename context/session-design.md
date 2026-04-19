@@ -168,7 +168,8 @@ module's implementation):
 - `push/3`, `push_node/3` — append to active path (the latter also returns
   the new node ID).
 - `navigate/2` — set active path by walking parent pointers from a given
-  node back to root.
+  node back to root. Passing `nil` clears the path; a subsequent `push`
+  creates a new root, so the tree may hold multiple disjoint roots.
 - `extend/1` — extend the active path from the head to a leaf via cursors.
 - `path_to/2` — walk parent pointers from a node to root.
 - `children/2`, `roots/1` — structural queries.

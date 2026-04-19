@@ -48,36 +48,18 @@ public API, events, snapshot, navigation/regeneration mechanics, and
 parked follow-up work (Session Manager, idle-timeout, etc.). Phases 5–8
 below derive directly from this spec.
 
----
-
-## Phase 5 — Session: Tree module
-
-**Status:** Not started.
+### Phase 5 — Session: Tree module *(done)*
 
 **Spec:** `session-design.md` (Tree schema).
 
-**Goal:** Implement `Omni.Session.Tree` as a pure-data module that owns
-the branching message structure.
-
-**Key work:**
-
-- `Tree` struct: `%{nodes, path, cursors}` with auto-incrementing node
-  IDs (`map_size(nodes) + 1`) and append-only semantics.
-- `new/1` constructor from an enumerable of nodes (for hydration).
-- Mutation: `push/3`, `push_node/3`, `navigate/2`, `extend/1`.
-- Queries: `path_to/2`, `children/2`, `roots/1`, `get_node/2`,
-  `get_message/2`.
-- Derived views: `messages/1`, `usage/1`, `head/1`, `size/1`.
-
-**Dependencies:** None (pure data).
-
-**Acceptance:**
-
-- All Tree operations pass unit tests in isolation.
-- Branch scenario test: push A, B, C; navigate to A; push D (creating a
-  branch); navigate to C via cursors; extend — verifies cursor and path
-  behaviour.
-- Empty-tree and single-root edge cases covered.
+Implemented `Omni.Session.Tree` as a pure-data module: `%Tree{nodes,
+path, cursors}` with auto-assigned integer node IDs, append-only
+semantics, and cursor-guided active path. Mutation via `push/3`,
+`push_node/3`, `navigate/2` (including `nil` to clear the path for
+multi-root trees), and `extend/1`. Structural queries (`children`,
+`siblings`, `roots`, `path_to`, `get_node`, `get_message`), derived
+views (`messages`, `usage`, `head`, `size`), `new/1` hydration
+constructor, and `Enumerable` over the active path.
 
 ---
 
