@@ -135,24 +135,78 @@ clear `regen_source` without tree mutation.
 
 ---
 
-## Beyond phase 8
+## Upcoming phases
 
-Candidates for follow-up work, detailed in `session-design.md` (Parked
-section):
+### Phase 9a — Agent and Session foundations for Manager
 
-- **`Omni.Session.Manager`** — supervisor, registry, DynamicSupervisor,
-  idle-timeout self-termination, `Manager.delete/1` convenience. Likely
-  the next major design phase once Session proper is stable.
+**Spec:** `manager-design.md` (Agent changes, Session changes).
+
+Preparation work on `Omni.Agent` and `Omni.Session` to support the
+Manager model. Agent gains a `:status` event fired on every
+`:idle`/`:running`/`:paused` transition. Session unifies
+`subscribe/1,2` under a `mode: :controller | :observer` option
+(default `:controller`), with the convention that controllers hold
+the session alive and observers don't. Session adds an
+`idle_shutdown_after` start option (`non_neg_integer() | :infinity`,
+no default — unset = never shut down) that schedules a cancellable
+shutdown timer when controllers drop to zero with the agent idle.
+Standalone Session behaviour is unchanged when the option is unset;
+the feature is opt-in at the Session layer.
+
+### Phase 9b — Manager core
+
+**Spec:** `manager-design.md` (Manager as Supervisor, Public API,
+The `use` pattern, Configuration).
+
+Ship `Omni.Session.Manager` as a `use`-pattern module. Apps define
+their own module (e.g. `MyApp.Sessions`) that `use`s the Manager and
+drops into a supervision tree with a required `:store` and optional
+`:idle_shutdown_after` (defaulting to 5 minutes for Manager-managed
+sessions). The Manager supervisor owns a Registry and a
+DynamicSupervisor with `:temporary` children. Public API: `create/2`,
+`open/3`, `close/2`, `delete/2`, `whereis/2`, `list/2` — with
+auto-generated shorthand on the app's module. Caller is auto-subscribed
+as controller on `create`/`open` by default (opt out with
+`subscribe: false`).
+
+### Phase 9c — Tracker and Manager-level pub/sub
+
+**Spec:** `manager-design.md` (The Tracker, Events, Public API §
+list_running / subscribe).
+
+Add `Omni.Session.Manager.Tracker` as the third child of the Manager
+supervisor. Manager synchronously calls `Tracker.add/2` on
+`create`/`open` before returning the pid, so tracked state is
+consistent with caller-visible state. Tracker subscribes to each
+session as `:observer` and maintains `%{id => %{title, status, pid}}`
+derived from Session events. Exposes `Manager.list_running/1`
+(sync snapshot) and `Manager.subscribe/1` (atomic snapshot + live
+`{:manager, pid, type, payload}` events for `:session_added` /
+`:session_status` / `:session_title` / `:session_removed`). Tracker
+crash-recovers by re-enumerating the Registry and re-subscribing.
+
+---
+
+## Beyond phase 9
+
+Candidates for follow-up work:
+
 - **`:data` field on Agent state** — app-defined per-session metadata
   slot on Agent rather than Session. Deferred until a concrete consumer
-  surfaces.
+  surfaces. (Parked in `session-design.md`.)
 - **Title auto-generation helpers** — `auto_title:` start option as sugar
-  over the subscribe-and-set pattern.
+  over the subscribe-and-set pattern. (Parked in `session-design.md`.)
 - **Retry / write-behind queue** for high-latency store adapters.
+  (Parked in `session-design.md`.)
 - **Persistent event log / replay** — subscribers resuming from a
-  sequence number after process restart.
+  sequence number after process restart. (Parked in `session-design.md`.)
 - **Agent init-triggers-initial-prompt** — extended `init/1` return or
-  `:prompt` start option (parked in `agent-redesign.md`).
+  `:prompt` start option. (Parked in `agent-redesign.md`.)
+- **Distributed Manager** — cross-node Registry, cross-node Tracker
+  pub/sub. (Parked in `manager-design.md`.)
+- **Manager-level telemetry** — observability events at Manager
+  operation boundaries. (Parked in `manager-design.md`.)
+- **Per-session Tracker metadata** — app-attachable fields on the
+  Tracker's session map. (Parked in `manager-design.md`.)
 
-These are deferred until the phases above are in hand and concrete need
-has been demonstrated.
+These are deferred until concrete need has been demonstrated.
