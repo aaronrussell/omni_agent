@@ -31,6 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **`Omni.Session.add_tool/2` / `remove_tool/2`** — convenience helpers over `set_agent(:tools, _)`. Tools remain non-persisted; these operations don't trigger `save_state`.
 - **`:title` event** — `{:session, pid, :title, title | nil}` emitted after `set_title/2`.
 - **`:tree` events on all tree mutations** — navigation and branch initiation emit `:tree` with empty `new_nodes` (tree path changed, no new nodes); turn commits emit `:tree` with the newly-added node ids as before.
+- **Agent `:status` event** — `{:agent, pid, :status, :idle | :running | :paused}` emitted on every status transition. Fires at the state-write site, so `:status` always precedes its derived event (`:turn`, `:cancelled`, `:error`, `:pause`). Idempotent transitions (already-idle → idle) don't emit.
+- **Session subscribe modes** — `subscribe/1,2,3` accepts `mode: :controller | :observer` (default `:controller`). Subscriptions are idempotent per pid; a second call with a different mode updates the mode in place. Start-opt `subscribers:` accepts bare pids (implicit `:controller`) or `{pid, mode}` tuples. Session forwards Agent `:status` events verbatim as `{:session, pid, :status, s}`.
+- **`:idle_shutdown_after` Session start option** — `non_neg_integer()` (ms) or `nil`. When set to a positive integer, the session self-shuts-down when the controller count drops to zero and the agent is idle. Evaluated only on transitions — never at init; a running/paused transition cancels any armed timer; a new controller (or upgrade from observer to controller) cancels too. Default `nil` keeps standalone Session behaviour unchanged.
 
 ### Fixed
 

@@ -133,25 +133,31 @@ during an in-flight regen (tree ends on the user; agent ends on the
 user's parent), resolved at turn commit; cancelled or errored regens
 clear `regen_source` without tree mutation.
 
----
-
-## Upcoming phases
-
-### Phase 9a — Agent and Session foundations for Manager
+### Phase 9a — Agent and Session foundations for Manager *(done)*
 
 **Spec:** `manager-design.md` (Agent changes, Session changes).
 
-Preparation work on `Omni.Agent` and `Omni.Session` to support the
-Manager model. Agent gains a `:status` event fired on every
-`:idle`/`:running`/`:paused` transition. Session unifies
-`subscribe/1,2` under a `mode: :controller | :observer` option
-(default `:controller`), with the convention that controllers hold
-the session alive and observers don't. Session adds an
-`idle_shutdown_after` start option (`non_neg_integer() | :infinity`,
-no default — unset = never shut down) that schedules a cancellable
-shutdown timer when controllers drop to zero with the agent idle.
-Standalone Session behaviour is unchanged when the option is unset;
-the feature is opt-in at the Session layer.
+Added the Agent `:status` event (`{:agent, pid, :status, :idle |
+:running | :paused}`) fired on every status transition, emitted at the
+state-write site so `:status` precedes its derived event
+(`:turn`/`:cancelled`/`:error`/`:pause`); idempotent idle→idle resets
+don't emit. Unified Session subscriber state under a `subscribers`
+MapSet (broadcast set) with a `controllers` MapSet subset (keep-alive
+set), and unified `subscribe/1,2,3` under a `mode: :controller |
+:observer` option — per-pid idempotent, mode updates in place; bare-pid
+arity kept for back-compat; start-opt `subscribers:` accepts `pid |
+{pid, mode}`. Session forwards Agent `:status` verbatim and caches
+`agent_status` internally. New `:idle_shutdown_after` start option
+(`nil | non_neg_integer()`, default `nil`) schedules a cancellable
+shutdown timer when controllers drop to zero with the agent idle —
+evaluated only on transitions (unsubscribe, mode change, controller
+DOWN, `:status :idle`), never at init; running/paused transitions
+cancel any armed timer. Standalone Session behaviour is unchanged when
+the option is unset.
+
+---
+
+## Upcoming phases
 
 ### Phase 9b — Manager core
 

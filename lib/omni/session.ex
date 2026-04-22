@@ -51,8 +51,17 @@ defmodule Omni.Session do
       `Omni.Session.Store` adapter and its config.
     * `:title` — initial title string. Applied on `:new` only; ignored
       on `:load` (persisted title wins).
-    * `:subscribe` — if `true`, subscribes the caller to session events.
-    * `:subscribers` — list of pids to subscribe.
+    * `:subscribe` — if `true`, subscribes the caller to session events
+      as a `:controller` (see `subscribe/1,2` for mode semantics).
+    * `:subscribers` — list of pids (implicit `:controller`) or
+      `{pid, :controller | :observer}` tuples to subscribe at startup.
+    * `:idle_shutdown_after` — `non_neg_integer()` (ms) or `nil`.
+      When a positive integer, the session self-shuts-down when the
+      last controller unsubscribes (or dies) and the agent becomes
+      idle. Unset / `nil` (the default) keeps the session running
+      until explicit stop. Init does not evaluate — shutdown is only
+      evaluated on transitions (a controller leaving, the agent going
+      idle).
     * `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
       standard GenServer options.
 
@@ -133,10 +142,16 @@ defmodule Omni.Session do
 
   ## Pub/sub
 
-  `subscribe/1,2` registers a pid and atomically returns an
+  `subscribe/1,2,3` registers a pid and atomically returns an
   `%Omni.Session.Snapshot{}` capturing the current tree, title, and
   agent slice. Every event emitted after the subscribe call is
   delivered to the subscriber. Monitors clean up subscribers on death.
+
+  Subscribers have a `:mode` (default `:controller`). Controllers
+  count toward keeping the session alive when `:idle_shutdown_after`
+  is configured; observers receive events but never hold the session
+  open. Subscriptions are idempotent per pid — re-subscribing with a
+  different mode updates the mode in place.
   """
 
   use GenServer
@@ -146,7 +161,16 @@ defmodule Omni.Session do
   alias Omni.Session.{Snapshot, Store, Tree}
 
   @genserver_keys [:name, :timeout, :hibernate_after, :spawn_opt, :debug]
-  @session_keys [:new, :load, :agent, :store, :title, :subscribe, :subscribers]
+  @session_keys [
+    :new,
+    :load,
+    :agent,
+    :store,
+    :title,
+    :subscribe,
+    :subscribers,
+    :idle_shutdown_after
+  ]
 
   defstruct [
     :id,
@@ -155,7 +179,11 @@ defmodule Omni.Session do
     :store,
     :agent,
     subscribers: MapSet.new(),
+    controllers: MapSet.new(),
     monitors: %{},
+    agent_status: :idle,
+    idle_shutdown_after: nil,
+    shutdown_timer: nil,
     last_persisted_state: nil,
     regen_source: nil
   ]
@@ -201,15 +229,35 @@ defmodule Omni.Session do
 
   Returns `{:ok, %Omni.Session.Snapshot{}}` — the snapshot captures the
   current tree, title, and a consistent agent slice at the instant of
-  subscription. Subsequent events are delivered as `{:session, pid, type, data}`.
+  subscription. Subsequent events are delivered as
+  `{:session, pid, type, data}`.
+
+  Accepts `mode: :controller | :observer` (default `:controller`).
+  Controllers count toward keeping the session alive when
+  `:idle_shutdown_after` is configured; observers do not. Calling
+  `subscribe/1,2` twice from the same pid is idempotent; passing a
+  different mode on the second call updates the pid's mode in place.
   """
   @spec subscribe(GenServer.server()) :: {:ok, Snapshot.t()}
-  def subscribe(session), do: GenServer.call(session, :subscribe)
+  def subscribe(session), do: subscribe(session, [])
 
-  @doc "Subscribes the given pid. Same semantics as `subscribe/1`."
-  @spec subscribe(GenServer.server(), pid()) :: {:ok, Snapshot.t()}
+  @doc """
+  Subscribes the caller with opts, or subscribes a specific pid as
+  `:controller`. Same semantics as `subscribe/1`.
+  """
+  @spec subscribe(GenServer.server(), keyword() | pid()) :: {:ok, Snapshot.t()}
+  def subscribe(session, opts) when is_list(opts),
+    do: GenServer.call(session, {:subscribe, :caller, opts})
+
   def subscribe(session, pid) when is_pid(pid),
-    do: GenServer.call(session, {:subscribe, pid})
+    do: GenServer.call(session, {:subscribe, pid, []})
+
+  @doc """
+  Subscribes the given pid with opts. See `subscribe/2` for `:mode`.
+  """
+  @spec subscribe(GenServer.server(), pid(), keyword()) :: {:ok, Snapshot.t()}
+  def subscribe(session, pid, opts) when is_pid(pid) and is_list(opts),
+    do: GenServer.call(session, {:subscribe, pid, opts})
 
   @doc "Unsubscribes the caller from session events."
   @spec unsubscribe(GenServer.server()) :: :ok
@@ -346,6 +394,7 @@ defmodule Omni.Session do
           tree: tree,
           store: opts[:store],
           agent: agent_pid,
+          idle_shutdown_after: Keyword.get(opts, :idle_shutdown_after),
           last_persisted_state: persistable
         }
         |> add_initial_subscribers(caller, opts)
@@ -367,10 +416,17 @@ defmodule Omni.Session do
       not Keyword.has_key?(opts, :store) ->
         {:error, :missing_store}
 
+      not valid_idle_shutdown_after?(opts[:idle_shutdown_after]) ->
+        {:error, :invalid_idle_shutdown_after}
+
       true ->
         :ok
     end
   end
+
+  defp valid_idle_shutdown_after?(nil), do: true
+  defp valid_idle_shutdown_after?(ms) when is_integer(ms) and ms >= 0, do: true
+  defp valid_idle_shutdown_after?(_), do: false
 
   defp resolve_mode(opts) do
     cond do
@@ -504,8 +560,14 @@ defmodule Omni.Session do
     caller_subs = if opts[:subscribe], do: [caller], else: []
     explicit = List.wrap(opts[:subscribers])
 
-    Enum.reduce(caller_subs ++ explicit, session, fn pid, acc ->
-      {acc, _snapshot} = subscribe_pid(acc, pid)
+    Enum.reduce(caller_subs ++ explicit, session, fn entry, acc ->
+      {pid, mode} =
+        case entry do
+          pid when is_pid(pid) -> {pid, :controller}
+          {pid, mode} when is_pid(pid) -> {pid, mode}
+        end
+
+      {acc, _snapshot} = do_subscribe(acc, pid, mode)
       acc
     end)
   end
@@ -525,22 +587,24 @@ defmodule Omni.Session do
     {:reply, Agent.resume(session.agent, decision), session}
   end
 
-  def handle_call(:subscribe, {pid, _}, session) do
-    {session, snapshot} = subscribe_pid(session, pid)
+  def handle_call({:subscribe, :caller, opts}, {pid, _}, session) do
+    mode = Keyword.get(opts, :mode, :controller)
+    {session, snapshot} = do_subscribe(session, pid, mode)
     {:reply, {:ok, snapshot}, session}
   end
 
-  def handle_call({:subscribe, pid}, _from, session) when is_pid(pid) do
-    {session, snapshot} = subscribe_pid(session, pid)
+  def handle_call({:subscribe, pid, opts}, _from, session) when is_pid(pid) do
+    mode = Keyword.get(opts, :mode, :controller)
+    {session, snapshot} = do_subscribe(session, pid, mode)
     {:reply, {:ok, snapshot}, session}
   end
 
   def handle_call(:unsubscribe, {pid, _}, session) do
-    {:reply, :ok, unsubscribe_pid(session, pid)}
+    {:reply, :ok, do_unsubscribe(session, pid)}
   end
 
   def handle_call({:unsubscribe, pid}, _from, session) when is_pid(pid) do
-    {:reply, :ok, unsubscribe_pid(session, pid)}
+    {:reply, :ok, do_unsubscribe(session, pid)}
   end
 
   def handle_call(:get_snapshot, _from, session) do
@@ -673,6 +737,22 @@ defmodule Omni.Session do
   end
 
   def handle_info(
+        {:agent, agent_pid, :status, status},
+        %{agent: agent_pid} = session
+      ) do
+    session = %{session | agent_status: status}
+    broadcast(session, :status, status)
+
+    session =
+      case status do
+        :idle -> maybe_schedule_shutdown(session)
+        _ -> cancel_shutdown_timer(session)
+      end
+
+    {:noreply, session}
+  end
+
+  def handle_info(
         {:agent, agent_pid, type, payload},
         %{agent: agent_pid, regen_source: source} = session
       )
@@ -694,12 +774,29 @@ defmodule Omni.Session do
         {:noreply, session}
 
       {pid, new_monitors} ->
-        {:noreply,
-         %{
-           session
-           | monitors: new_monitors,
-             subscribers: MapSet.delete(session.subscribers, pid)
-         }}
+        was_controller = MapSet.member?(session.controllers, pid)
+
+        session = %{
+          session
+          | monitors: new_monitors,
+            subscribers: MapSet.delete(session.subscribers, pid),
+            controllers: MapSet.delete(session.controllers, pid)
+        }
+
+        session = if was_controller, do: maybe_schedule_shutdown(session), else: session
+        {:noreply, session}
+    end
+  end
+
+  # -- Idle shutdown --
+
+  def handle_info(:idle_shutdown, session) do
+    session = %{session | shutdown_timer: nil}
+
+    if shutdown_conditions_met?(session) do
+      {:stop, :normal, session}
+    else
+      {:noreply, session}
     end
   end
 
@@ -836,40 +933,89 @@ defmodule Omni.Session do
     :ok
   end
 
-  defp subscribe_pid(session, pid) do
-    if MapSet.member?(session.subscribers, pid) do
-      {session, build_snapshot(session)}
-    else
-      ref = Process.monitor(pid)
-
-      session = %{
+  defp do_subscribe(session, pid, mode) when mode in [:controller, :observer] do
+    session =
+      if MapSet.member?(session.subscribers, pid) do
         session
-        | subscribers: MapSet.put(session.subscribers, pid),
-          monitors: Map.put(session.monitors, ref, pid)
-      }
+      else
+        ref = Process.monitor(pid)
 
-      {session, build_snapshot(session)}
-    end
+        %{
+          session
+          | subscribers: MapSet.put(session.subscribers, pid),
+            monitors: Map.put(session.monitors, ref, pid)
+        }
+      end
+
+    session =
+      case mode do
+        :controller ->
+          %{session | controllers: MapSet.put(session.controllers, pid)}
+          |> cancel_shutdown_timer()
+
+        :observer ->
+          if MapSet.member?(session.controllers, pid) do
+            %{session | controllers: MapSet.delete(session.controllers, pid)}
+            |> maybe_schedule_shutdown()
+          else
+            session
+          end
+      end
+
+    {session, build_snapshot(session)}
   end
 
-  defp unsubscribe_pid(session, pid) do
+  defp do_unsubscribe(session, pid) do
     case find_monitor_ref(session.monitors, pid) do
       nil ->
         session
 
       ref ->
         Process.demonitor(ref, [:flush])
+        was_controller = MapSet.member?(session.controllers, pid)
 
-        %{
+        session = %{
           session
           | subscribers: MapSet.delete(session.subscribers, pid),
+            controllers: MapSet.delete(session.controllers, pid),
             monitors: Map.delete(session.monitors, ref)
         }
+
+        if was_controller, do: maybe_schedule_shutdown(session), else: session
     end
   end
 
   defp find_monitor_ref(monitors, pid) do
     Enum.find_value(monitors, fn {ref, mon_pid} -> mon_pid == pid && ref end)
+  end
+
+  # -- Idle shutdown helpers --
+
+  defp shutdown_conditions_met?(session) do
+    MapSet.size(session.controllers) == 0 and
+      session.agent_status == :idle and
+      not is_nil(session.idle_shutdown_after)
+  end
+
+  defp maybe_schedule_shutdown(%{shutdown_timer: ref} = session) when is_reference(ref) do
+    # A timer is already armed; leave it alone.
+    session
+  end
+
+  defp maybe_schedule_shutdown(session) do
+    if shutdown_conditions_met?(session) do
+      ref = Process.send_after(self(), :idle_shutdown, session.idle_shutdown_after)
+      %{session | shutdown_timer: ref}
+    else
+      session
+    end
+  end
+
+  defp cancel_shutdown_timer(%{shutdown_timer: nil} = session), do: session
+
+  defp cancel_shutdown_timer(%{shutdown_timer: ref} = session) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    %{session | shutdown_timer: nil}
   end
 
   defp build_snapshot(session) do

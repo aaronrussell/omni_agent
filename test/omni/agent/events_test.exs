@@ -30,9 +30,11 @@ defmodule Omni.Agent.EventsTest do
         end)
 
       assert shape == [
+               :status,
                {:message, :user},
                {:message, :assistant},
                :step,
+               :status,
                :turn
              ]
     end

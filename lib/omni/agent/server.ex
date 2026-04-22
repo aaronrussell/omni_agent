@@ -170,6 +170,8 @@ defmodule Omni.Agent.Server do
         paused_reason: nil
     }
 
+    notify(server, :status, :running)
+
     server =
       case decision do
         :execute ->
@@ -393,6 +395,7 @@ defmodule Omni.Agent.Server do
         turn_messages: [user_message],
         prompt_opts: prompt_opts
     }
+    |> tap(&notify(&1, :status, :running))
     |> tap(&notify(&1, :message, user_message))
     |> evaluate_head()
   end
@@ -528,6 +531,7 @@ defmodule Omni.Agent.Server do
             paused_use: tool_use,
             paused_reason: reason
         }
+        |> tap(&notify(&1, :status, :paused))
         |> tap(&notify(&1, :pause, {reason, tool_use}))
     end
   end
@@ -762,7 +766,9 @@ defmodule Omni.Agent.Server do
   # -- Helpers --
 
   defp reset_turn(server) do
-    %{
+    old_status = server.state.status
+
+    server = %{
       server
       | state: %{server.state | status: :idle, step: 0},
         step_message: nil,
@@ -782,6 +788,9 @@ defmodule Omni.Agent.Server do
         paused_use: nil,
         paused_reason: nil
     }
+
+    if old_status != :idle, do: notify(server, :status, :idle)
+    server
   end
 
   defp max_steps_reached?(server) do

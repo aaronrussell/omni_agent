@@ -132,6 +132,7 @@ defmodule Omni.Agent do
       {:agent, pid, :error,       reason}                            # terminal error, agent goes idle
       {:agent, pid, :cancelled,   %Response{stop_reason: :cancelled}} # cancel/1 invoked; pending discarded
       {:agent, pid, :state,       %State{}}                          # set_state mutation applied
+      {:agent, pid, :status,      :idle | :running | :paused}        # status transitioned
 
   `:message` fires each time a message is appended to the in-flight
   pending queue — the initial user message, each assistant response after
@@ -156,9 +157,12 @@ defmodule Omni.Agent do
   pending messages are discarded (`state.messages` unchanged). `:error`
   fires after `handle_error/2` returns `{:stop, state}` — pending
   messages are discarded and the agent goes idle. `:state` fires after a
-  successful `set_state/2,3` call with the full new `%State{}`. A simple
-  chatbot (one step per prompt) sees `:message(user) → :message(assistant)
-  → :step → :turn {:stop, _}`.
+  successful `set_state/2,3` call with the full new `%State{}`. `:status`
+  fires on every lifecycle transition (`:idle`/`:running`/`:paused`)
+  and always precedes the derived event that caused the transition
+  (e.g. `:status :idle` before `:turn {:stop, _}`). A simple chatbot
+  (one step per prompt) sees `:status :running → :message(user) →
+  :message(assistant) → :step → :status :idle → :turn {:stop, _}`.
 
   ## Tools and the agent loop
 
