@@ -132,6 +132,33 @@ defmodule Omni.Session.ManagerTest do
       refute MapSet.member?(controllers, self())
     end
 
+    test "DynamicSupervisor is never a session subscriber", %{manager: m} do
+      # Session's `subscribe: true` sugar uses `hd(callers)` to pick a
+      # subscriber. Because the DynamicSupervisor is what actually invokes
+      # `Session.start_link`, an accidental pass-through of the `:subscribe`
+      # opt would subscribe the DynSup and pin every session against
+      # idle-shutdown forever. The Manager strips `:subscribe` and injects
+      # `subscribers: [caller]` explicitly to avoid this — verify both
+      # branches of `inject_caller_subscriber/2` honour the invariant.
+      {:ok, pid_subscribed} = Manager.create(m, id: "sub", agent: minimal_agent())
+
+      {:ok, pid_unsubscribed} =
+        Manager.create(m, id: "unsub", agent: minimal_agent(), subscribe: false)
+
+      dynsup = dynsup_pid(m)
+
+      # Sanity check the caller-side behaviour first.
+      assert MapSet.member?(session_state(pid_subscribed).controllers, self())
+      refute MapSet.member?(session_state(pid_unsubscribed).controllers, self())
+
+      # The invariant: DynSup is in neither set in either branch.
+      for pid <- [pid_subscribed, pid_unsubscribed] do
+        state = session_state(pid)
+        refute MapSet.member?(state.subscribers, dynsup)
+        refute MapSet.member?(state.controllers, dynsup)
+      end
+    end
+
     test "Manager default idle_shutdown_after flows to session", %{manager: m} do
       {:ok, pid} = Manager.create(m, agent: minimal_agent(), subscribe: false)
 
