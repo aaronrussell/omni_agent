@@ -155,25 +155,36 @@ DOWN, `:status :idle`), never at init; running/paused transitions
 cancel any armed timer. Standalone Session behaviour is unchanged when
 the option is unset.
 
----
-
-## Upcoming phases
-
-### Phase 9b — Manager core
+### Phase 9b — Manager core *(done)*
 
 **Spec:** `manager-design.md` (Manager as Supervisor, Public API,
 The `use` pattern, Configuration).
 
-Ship `Omni.Session.Manager` as a `use`-pattern module. Apps define
-their own module (e.g. `MyApp.Sessions`) that `use`s the Manager and
-drops into a supervision tree with a required `:store` and optional
-`:idle_shutdown_after` (defaulting to 5 minutes for Manager-managed
-sessions). The Manager supervisor owns a Registry and a
-DynamicSupervisor with `:temporary` children. Public API: `create/2`,
-`open/3`, `close/2`, `delete/2`, `whereis/2`, `list/2` — with
-auto-generated shorthand on the app's module. Caller is auto-subscribed
-as controller on `create`/`open` by default (opt out with
-`subscribe: false`).
+Shipped `Omni.Session.Manager` as a `use`-pattern Supervisor that owns
+a Registry (id → pid) and a DynamicSupervisor (per-session lifetimes,
+`:temporary` children). Config lives in `:persistent_term` keyed by
+the Manager module — resilient to Registry restart under
+`:one_for_one`. Required `:store`; `:idle_shutdown_after` defaults to
+300_000 ms with `nil` to disable (per-Manager or per-call). Public
+API: `create/2` (with `:id` collision check against store + running
+Registry), `open/3` with tagged `{:ok, :started | :existing, pid}`
+return (start-time opts applied on `:started`, silently dropped on
+`:existing` — callers who need fresh config `close` + `open`),
+`close/2` (idempotent `Session.stop/1`), `delete/2` (close-then-store
+delete), `whereis/2`, `list/2`. Caller is auto-subscribed as
+`:controller` by default (opt out with `subscribe: false`); Manager
+strips `:subscribe` before forwarding to `Session.start_link` and
+explicitly injects `subscribers: [caller]`, because Session's own
+`subscribe: true` sugar would subscribe the DynamicSupervisor and
+permanently pin sessions against idle-shutdown. Bundled two small
+prerequisites: a new `Store.exists?/2` callback (plus FileSystem
+implementation) for the duplicate-id check, and a Session `init/1`
+guard that returns `{:error, :already_exists}` when `new: <binary>`
+collides with persisted state (`new: :auto` skips the check).
+
+---
+
+## Upcoming phases
 
 ### Phase 9c — Tracker and Manager-level pub/sub
 

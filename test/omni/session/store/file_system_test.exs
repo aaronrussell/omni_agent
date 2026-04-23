@@ -404,4 +404,31 @@ defmodule Omni.Session.Store.FileSystemTest do
       assert :ok = FileSystem.delete(cfg(ctx), "never_existed")
     end
   end
+
+  describe "exists?/2" do
+    test "returns true for a persisted session", ctx do
+      :ok = FileSystem.save_tree(cfg(ctx), "here", sample_tree())
+      assert FileSystem.exists?(cfg(ctx), "here")
+    end
+
+    test "returns true even for a state-only session (no tree yet)", ctx do
+      :ok = FileSystem.save_state(cfg(ctx), "here", %{title: "t"})
+      assert FileSystem.exists?(cfg(ctx), "here")
+    end
+
+    test "returns false when no session directory exists", ctx do
+      refute FileSystem.exists?(cfg(ctx), "missing")
+    end
+
+    test "returns false for a directory without session.json", ctx do
+      File.mkdir_p!(Path.join(ctx.tmp_dir, "empty"))
+      refute FileSystem.exists?(cfg(ctx), "empty")
+    end
+
+    test "returns false after delete", ctx do
+      :ok = FileSystem.save_tree(cfg(ctx), "here", sample_tree())
+      :ok = FileSystem.delete(cfg(ctx), "here")
+      refute FileSystem.exists?(cfg(ctx), "here")
+    end
+  end
 end

@@ -8,6 +8,9 @@ defmodule Omni.Session.Store.Failing do
   #   :fail_save_tree  — reason atom to return from save_tree, or nil
   #   :fail_save_state — reason atom to return from save_state, or nil
   #   :fail_load       — set to :not_found to simulate a missing session
+  #   :fail_delete     — reason atom to return from delete, or nil
+  #   :exists          — boolean to return from exists?, or nil (falls
+  #                       back to delegate, else false)
   #   :delegate        — optional inner store to dispatch to when ops
   #                       aren't configured to fail
   #
@@ -69,9 +72,29 @@ defmodule Omni.Session.Store.Failing do
 
   @impl true
   def delete(cfg, id, opts) do
-    case Keyword.get(cfg, :delegate) do
-      nil -> :ok
-      store -> Omni.Session.Store.delete(store, id, opts)
+    case Keyword.get(cfg, :fail_delete) do
+      nil ->
+        case Keyword.get(cfg, :delegate) do
+          nil -> :ok
+          store -> Omni.Session.Store.delete(store, id, opts)
+        end
+
+      reason ->
+        {:error, reason}
+    end
+  end
+
+  @impl true
+  def exists?(cfg, id) do
+    case Keyword.fetch(cfg, :exists) do
+      {:ok, value} when is_boolean(value) ->
+        value
+
+      :error ->
+        case Keyword.get(cfg, :delegate) do
+          nil -> false
+          store -> Omni.Session.Store.exists?(store, id)
+        end
     end
   end
 end

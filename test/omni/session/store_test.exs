@@ -39,6 +39,12 @@ defmodule Omni.Session.StoreTest do
       send(config[:test_pid], {:delete, config, id, opts})
       :ok
     end
+
+    @impl true
+    def exists?(config, id) do
+      send(config[:test_pid], {:exists?, config, id})
+      false
+    end
   end
 
   setup do
@@ -107,6 +113,13 @@ defmodule Omni.Session.StoreTest do
     test "defaults opts to []", %{store: store} do
       Store.delete(store, "abc")
       assert_received {:delete, _cfg, "abc", []}
+    end
+  end
+
+  describe "exists?/2" do
+    test "forwards to adapter with config unpacked", %{store: store} do
+      assert false == Store.exists?(store, "abc")
+      assert_received {:exists?, _cfg, "abc"}
     end
   end
 end

@@ -112,6 +112,11 @@ defmodule Omni.Session.Store.FileSystem do
     end
   end
 
+  @impl true
+  def exists?(cfg, id) do
+    cfg |> session_dir(id) |> session_path() |> File.exists?()
+  end
+
   # ── Paths ──────────────────────────────────────────────────────────
 
   defp base_path(cfg) do

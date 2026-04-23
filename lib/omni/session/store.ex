@@ -76,13 +76,14 @@ defmodule Omni.Session.Store do
 
   ## Implementing an adapter
 
-  Implement `@behaviour Omni.Session.Store` and the five callbacks:
+  Implement `@behaviour Omni.Session.Store` and the six callbacks:
 
     * `c:save_tree/4`
     * `c:save_state/4`
     * `c:load/3`
     * `c:list/2`
     * `c:delete/3`
+    * `c:exists?/2`
 
   Configuration arrives as a `keyword()` (the second element of the
   store tuple). Adapters are free to validate or destructure it as
@@ -169,6 +170,15 @@ defmodule Omni.Session.Store do
   @callback delete(config :: term(), session_id(), keyword()) ::
               :ok | {:error, term()}
 
+  @doc """
+  Returns `true` if `id` has persisted state in the adapter.
+
+  Used by `Omni.Session` to detect duplicate-id collisions on
+  `start_link(new: binary_id)`. Adapter errors should surface as
+  `false` — the caller treats "unsure" and "not present" identically.
+  """
+  @callback exists?(config :: term(), session_id()) :: boolean()
+
   # Dispatch
 
   @doc "Persist the tree via the store's adapter."
@@ -196,4 +206,9 @@ defmodule Omni.Session.Store do
   @spec delete(t(), session_id(), keyword()) :: :ok | {:error, term()}
   def delete({mod, cfg}, id, opts \\ []),
     do: mod.delete(cfg, id, opts)
+
+  @doc "Check whether the store holds persisted state for `id`."
+  @spec exists?(t(), session_id()) :: boolean()
+  def exists?({mod, cfg}, id),
+    do: mod.exists?(cfg, id)
 end

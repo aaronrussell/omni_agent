@@ -60,6 +60,48 @@ defmodule Omni.Session.LifecycleTest do
           store: tmp_store(ctx)
         )
     end
+
+    test "new: \"explicit\" errors :already_exists when id is in the store", ctx do
+      # Write the store directly — persistence is what matters, not an
+      # intermediate Session. Any saved state marks the id as taken.
+      store = tmp_store(ctx)
+      :ok = Omni.Session.Store.save_state(store, "taken", %{title: "prior"})
+
+      Process.flag(:trap_exit, true)
+
+      {:error, :already_exists} =
+        Session.start_link(
+          new: "taken",
+          agent: [model: model()],
+          store: store
+        )
+    end
+
+    test "new: :auto skips the duplicate check even if exists? returns true", ctx do
+      store =
+        {Omni.Session.Store.Failing, exists: true, delegate: tmp_store(ctx)}
+
+      {:ok, pid} =
+        Session.start_link(
+          new: :auto,
+          agent: [model: model()],
+          store: store
+        )
+
+      assert Process.alive?(pid)
+      Omni.Session.stop(pid)
+    end
+
+    test "no :new key skips the duplicate check", ctx do
+      store =
+        {Omni.Session.Store.Failing, exists: true, delegate: tmp_store(ctx)}
+
+      {:ok, pid} =
+        Session.start_link(agent: [model: model()], store: store)
+
+      assert Process.alive?(pid)
+      Omni.Session.stop(pid)
+    end
   end
 
   describe "load-mode" do

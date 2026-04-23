@@ -83,6 +83,10 @@ defmodule Omni.Session do
   `{:error, :initial_messages_not_supported}` — the tree is the sole
   entry point for messages.
 
+  `new: "explicit-id"` is **rejected** with `{:error, :already_exists}`
+  when the id is already persisted in the store. `new: :auto` skips the
+  check (128-bit entropy makes collision effectively impossible).
+
   ### Auto-generated ids
 
   `new: :auto` (and no mode supplied) generates 22-character URL-safe
@@ -450,16 +454,19 @@ defmodule Omni.Session do
 
   # -- Mode-specific preparation --
 
-  defp prepare(:new, _id, opts) do
+  defp prepare(:new, id, opts) do
     agent_opts = agent_start_opts(opts[:agent])
 
-    case Keyword.get(agent_opts, :messages) do
-      nil ->
+    cond do
+      Keyword.get(agent_opts, :messages) != nil ->
+        {:error, :initial_messages_not_supported}
+
+      explicit_new_id?(opts) and Store.exists?(opts[:store], id) ->
+        {:error, :already_exists}
+
+      true ->
         persistable = persistable_from_agent_opts(agent_opts, opts[:title])
         {:ok, %Tree{}, opts[:title], persistable, agent_opts}
-
-      _ ->
-        {:error, :initial_messages_not_supported}
     end
   end
 
@@ -470,6 +477,13 @@ defmodule Omni.Session do
 
       {:ok, tree, state_map} ->
         reconcile_load(tree, state_map, opts)
+    end
+  end
+
+  defp explicit_new_id?(opts) do
+    case Keyword.get(opts, :new) do
+      id when is_binary(id) -> true
+      _ -> false
     end
   end
 
