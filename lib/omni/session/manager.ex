@@ -26,7 +26,7 @@ defmodule Omni.Session.Manager do
 
   ## What the Manager supervises
 
-      MyApp.Sessions (Supervisor, :one_for_one)
+      MyApp.Sessions (Supervisor, :rest_for_one)
       ├── MyApp.Sessions.Registry (Registry, keys: :unique)
       ├── MyApp.Sessions.DynamicSupervisor (DynamicSupervisor)
       └── MyApp.Sessions.Tracker (GenServer)
@@ -187,7 +187,7 @@ defmodule Omni.Session.Manager do
       {Tracker, name: tracker_name(name), manager: name, registry: registry_name(name)}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :rest_for_one)
   end
 
   defp fetch_name!(opts) do

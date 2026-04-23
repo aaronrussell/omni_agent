@@ -246,10 +246,10 @@ runs until explicit stop. Opt into the feature by passing a value.
 ## Manager as Supervisor
 
 The Manager is a Supervisor with three named children, using
-`:one_for_one` restart strategy:
+`:rest_for_one` restart strategy:
 
 ```
-MyApp.Sessions (Supervisor, :one_for_one)
+MyApp.Sessions (Supervisor, :rest_for_one)
 ├── MyApp.Sessions.Registry (Registry, keys: :unique)
 ├── MyApp.Sessions.DynamicSupervisor (DynamicSupervisor, :temporary children)
 └── MyApp.Sessions.Tracker (GenServer)
@@ -272,23 +272,32 @@ MyApp.Sessions (Supervisor, :one_for_one)
 - **Tracker** — maintains the live cross-session status feed. See
   "The Tracker" below.
 
-### `:one_for_one` rationale
+### `:rest_for_one` rationale
 
-The three children are functionally independent:
+Child order is `[Registry, DynamicSupervisor, Tracker]` — from most
+foundational to most derived. Under `:rest_for_one`, a child's crash
+restarts that child and every child declared after it.
 
-- If Tracker crashes, running sessions keep running. Tracker restarts and
-  re-observes them (see "Tracker recovery").
-- If Registry crashes, in-flight `Session.prompt`/etc. calls made via
-  `{:via, Registry, _}` names will fail, but already-established pids
-  held by callers still work. Registry restarts empty; new session
-  registrations populate it. Sessions registered under the previous
-  instance are unreachable by name until they re-register (which they
-  won't — sessions register once at startup).
-- If DynamicSupervisor crashes, all running sessions die with it.
+- **Tracker crash** (most likely — biggest state, most event handling):
+  only Tracker restarts. Registry entries and running sessions are
+  untouched. Tracker rebuilds by enumerating the Registry and
+  re-observing each session (see "Tracker recovery").
+- **DynamicSupervisor crash** (rare, severe): DynSup and Tracker
+  restart. All sessions die with the DynSup; Registry entries
+  auto-clear via its DOWN monitors; Tracker rebuilds against an empty
+  Registry.
+- **Registry crash** (rare, catastrophic): all three restart. This is
+  the case `:rest_for_one` exists to handle. Under `:one_for_one`,
+  Registry restarting empty would leave running sessions registered to
+  the dead Registry instance — reachable only via their existing pids,
+  invisible to `whereis`, and duplicable by `create`/`open` for the
+  same id. Cascading the restart kills those sessions cleanly so
+  Registry and Tracker come back in sync with no ghost processes.
 
-The Registry/DynamicSupervisor crash modes are severe but rare; treating
-them as independent (rather than `:rest_for_one` cascading) avoids
-cascade-killing healthy sessions on a Tracker glitch.
+Tracker is last in the order, so the common failure case (Tracker
+crash) does not cascade — healthy sessions are preserved. The strategy
+only bites on the two severe cases, where cascading is the correct
+behaviour.
 
 ---
 
