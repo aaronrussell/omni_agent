@@ -235,9 +235,9 @@ defstruct [
   # Tool decision phase (set when decisions begin, cleared by reset_turn)
   tool_map: nil,                      # name → Tool lookup
   approved_uses: [],                  # already-approved tool uses (reversed)
+  tool_uses: [],                      # full ordered list captured at phase start
   remaining_uses: [],                 # tool uses not yet presented to handle_tool_use
-  rejected_results: [],               # stashed rejected tool results
-  provided_results: [],               # stashed results from {:result, ...} returns
+  decision_results: %{},              # tool_use_id → ToolResult from :reject/:result
   paused_use: nil,                    # the tool_use awaiting a human decision
   paused_reason: nil                  # the reason from {:pause, reason, state}
 ]

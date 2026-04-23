@@ -64,9 +64,15 @@ defmodule Omni.Session.SessionCase do
 
       defp do_eventually(fun, deadline) do
         cond do
-          fun.() -> true
-          System.monotonic_time(:millisecond) > deadline -> false
-          true -> Process.sleep(10); do_eventually(fun, deadline)
+          fun.() ->
+            true
+
+          System.monotonic_time(:millisecond) > deadline ->
+            false
+
+          true ->
+            Process.sleep(10)
+            do_eventually(fun, deadline)
         end
       end
 

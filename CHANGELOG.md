@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Fixed
 
 - **Per-segment `turn_usage` in the Agent** — `commit_segment/1` now resets `turn_usage` alongside `turn_messages`, so each `:turn` event's `response.usage` reflects only that segment rather than the cumulative turn. Prevents double-counting across multi-segment (`{:continue, _}`) turns for any subscriber — including `Omni.Session`, which attaches each segment's usage to its last assistant node in the persisted tree.
+- **Tool-result ordering in the Agent** — when an assistant message contained multiple `%ToolUse{}` blocks, the tool-result user message the agent appended could come out in the wrong order. Two bugs compounded: `provided_results` accumulated forward then got spuriously reversed at merge time, and the three decision-type accumulators were concatenated as `rejected ++ provided ++ executed` — losing any interleaving across decision types (`[first→:result, second→:reject]` came out as `[second_rejected, first_provided]`). Replaced the type-keyed accumulators with a single `tool_use_id`-keyed map plus the original ordered `tool_uses` list; results are now reassembled in tool-use order, insensitive to decision type, sync-vs-resume arrival order, and the executor's parallel completion order.
 
 ## [0.2.0] - 2026-04-02
 

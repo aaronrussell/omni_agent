@@ -65,12 +65,20 @@ defmodule Omni.Agent.Server do
     step_task: nil,
     executor_task: nil,
 
-    # Tool decision phase (set when tool decisions begin, cleared by reset_turn)
+    # Tool decision phase (set when tool decisions begin, cleared by reset_turn).
+    #
+    # tool_uses: full ordered list captured at decision-phase start. Source of
+    #   truth for output order of the tool-result user message — decisions
+    #   and executed results are reassembled by looking up each tool_use.id
+    #   in this list's order.
+    # remaining_uses: shrinking tail that drives the decision loop.
+    # decision_results: %{tool_use_id => %ToolResult{}} populated by :reject
+    #   and :result decisions from both the sync loop and :resume.
     tool_map: nil,
     approved_uses: [],
+    tool_uses: [],
     remaining_uses: [],
-    rejected_results: [],
-    provided_results: [],
+    decision_results: %{},
     paused_use: nil,
     paused_reason: nil
   ]
@@ -186,10 +194,10 @@ defmodule Omni.Agent.Server do
               is_error: true
             )
 
-          %{server | rejected_results: server.rejected_results ++ [result]}
+          %{server | decision_results: Map.put(server.decision_results, tool_use.id, result)}
 
         {:result, result} ->
-          %{server | provided_results: server.provided_results ++ [result]}
+          %{server | decision_results: Map.put(server.decision_results, tool_use.id, result)}
       end
 
     server = process_next_tool_decision(server)
@@ -473,7 +481,13 @@ defmodule Omni.Agent.Server do
   defp handle_tool_decision_phase(tool_uses, server) do
     tool_map = build_tool_map(server.state.tools)
 
-    %{server | tool_map: tool_map, remaining_uses: tool_uses, approved_uses: []}
+    %{
+      server
+      | tool_map: tool_map,
+        tool_uses: tool_uses,
+        remaining_uses: tool_uses,
+        approved_uses: []
+    }
     |> process_next_tool_decision()
   end
 
@@ -517,11 +531,19 @@ defmodule Omni.Agent.Server do
             is_error: true
           )
 
-        %{server | state: new_state, rejected_results: server.rejected_results ++ [result]}
+        %{
+          server
+          | state: new_state,
+            decision_results: Map.put(server.decision_results, tool_use.id, result)
+        }
         |> process_next_tool_decision()
 
       {:result, result, new_state} ->
-        %{server | state: new_state, provided_results: server.provided_results ++ [result]}
+        %{
+          server
+          | state: new_state,
+            decision_results: Map.put(server.decision_results, tool_use.id, result)
+        }
         |> process_next_tool_decision()
 
       {:pause, reason, new_state} ->
@@ -554,10 +576,16 @@ defmodule Omni.Agent.Server do
   # -- Tool execution results --
 
   defp handle_tools_executed(executed_results, server) do
-    all_results =
-      server.rejected_results ++ Enum.reverse(server.provided_results) ++ executed_results
+    # Reassemble results in tool_uses order so the tool_result user message
+    # mirrors the assistant's tool_use block order, regardless of decision
+    # type or executor completion order (tools run in parallel).
+    executed_map = Map.new(executed_results, &{&1.tool_use_id, &1})
+    all_by_id = Map.merge(server.decision_results, executed_map)
 
-    server = %{server | executor_task: nil, rejected_results: [], provided_results: []}
+    all_results =
+      Enum.map(server.tool_uses, fn %ToolUse{id: id} -> Map.fetch!(all_by_id, id) end)
+
+    server = %{server | executor_task: nil, tool_uses: [], decision_results: %{}}
 
     # Call handle_tool_result for each and notify listener
     {final_results, server} =
@@ -776,15 +804,15 @@ defmodule Omni.Agent.Server do
         turn_usage: %Usage{},
         step_task: nil,
         executor_task: nil,
-        rejected_results: [],
-        provided_results: [],
         next_prompt: nil,
         prompt_opts: [],
         last_response: nil,
         partial_message: nil,
         tool_map: nil,
         approved_uses: [],
+        tool_uses: [],
         remaining_uses: [],
+        decision_results: %{},
         paused_use: nil,
         paused_reason: nil
     }
