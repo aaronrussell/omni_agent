@@ -46,7 +46,14 @@ defmodule Omni.Agent.MixProject do
       source_ref: "v#{@version}",
       homepage_url: @source_url,
       extras: ["CHANGELOG.md"],
-      skip_undefined_reference_warnings_on: ["CHANGELOG.md"]
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
+      groups_for_modules: [
+        Sessions: [
+          Omni.Session,
+          ~r/^Omni\.Session\.(?!Store).+$/,
+        ],
+        Stores: ~r/^Omni\.Session\.Store/,
+      ],
     ]
   end
 
