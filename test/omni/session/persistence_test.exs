@@ -116,7 +116,7 @@ defmodule Omni.Session.PersistenceTest do
 
   describe "cancel/error do not corrupt persisted state" do
     test "cancel discards turn_messages; tree untouched", ctx do
-      {session, _} = start_session(ctx, new: "s1", fixture: @text_fixture)
+      {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
 
       # First, complete one turn so the tree has something in it.
       :ok = Session.prompt(session, "Committed")
@@ -124,9 +124,29 @@ defmodule Omni.Session.PersistenceTest do
       committed_tree = Session.get_tree(session)
       assert Tree.size(committed_tree) == 2
 
-      # Now prompt and cancel before a response completes.
+      # Replace the stub with a receive-gated variant so the next call blocks
+      # until the test releases — guarantees cancel arrives in-flight.
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        send(parent, {:llm_called, gate_ref, self()})
+
+        receive do
+          {:release, ^gate_ref} -> :ok
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
+
       :ok = Session.prompt(session, "Will be cancelled")
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
       :ok = Session.cancel(session)
+      send(plug_pid, {:release, gate_ref})
       _ = collect_session_events(session)
 
       after_cancel_tree = Session.get_tree(session)

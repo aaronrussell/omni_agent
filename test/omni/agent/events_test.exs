@@ -199,7 +199,22 @@ defmodule Omni.Agent.EventsTest do
   describe "cancel and error do not emit :turn" do
     test "cancel leaves state.messages unchanged" do
       stub_name = unique_stub_name()
-      stub_slow(stub_name, @text_fixture, 500)
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        send(parent, {:llm_called, gate_ref, self()})
+
+        receive do
+          {:release, ^gate_ref} -> :ok
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
 
       {:ok, agent} =
         Agent.start_link(
@@ -212,8 +227,9 @@ defmodule Omni.Agent.EventsTest do
       assert before_messages == []
 
       :ok = Agent.prompt(agent, "Hello!")
-      Process.sleep(50)
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
       :ok = Agent.cancel(agent)
+      send(plug_pid, {:release, gate_ref})
 
       events = collect_events(agent, 2000)
       refute Enum.any?(events, &match?({:turn, _}, &1))
@@ -244,8 +260,6 @@ defmodule Omni.Agent.EventsTest do
   describe ":state event" do
     test "fires on successful set_state/2 with full new state" do
       {:ok, agent} = start_agent()
-      # Drain any startup chatter (no events expected but be safe).
-      Process.sleep(10)
 
       :ok = Agent.set_state(agent, system: "Be concise.")
 
@@ -255,7 +269,6 @@ defmodule Omni.Agent.EventsTest do
 
     test "fires on successful set_state/3" do
       {:ok, agent} = start_agent()
-      Process.sleep(10)
 
       :ok = Agent.set_state(agent, :tools, [:fake_tool])
 
@@ -264,7 +277,6 @@ defmodule Omni.Agent.EventsTest do
 
     test "emits once per successful call" do
       {:ok, agent} = start_agent()
-      Process.sleep(10)
 
       :ok = Agent.set_state(agent, system: "A")
       :ok = Agent.set_state(agent, system: "B")
@@ -276,7 +288,6 @@ defmodule Omni.Agent.EventsTest do
 
     test "does not fire on failed set_state (:invalid_messages)" do
       {:ok, agent} = start_agent()
-      Process.sleep(10)
 
       # Ends with a user message — violates the messages invariant.
       bad_messages = [Message.new(role: :user, content: "hi")]
@@ -287,7 +298,6 @@ defmodule Omni.Agent.EventsTest do
 
     test "does not fire on failed set_state (:invalid_key)" do
       {:ok, agent} = start_agent()
-      Process.sleep(10)
 
       assert {:error, {:invalid_key, :private}} = Agent.set_state(agent, private: %{})
       refute_receive {:agent, ^agent, :state, _}, 100
@@ -295,7 +305,6 @@ defmodule Omni.Agent.EventsTest do
 
     test "does not fire on failed set_state/3 (:invalid_key)" do
       {:ok, agent} = start_agent()
-      Process.sleep(10)
 
       assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, :status, :running)
       refute_receive {:agent, ^agent, :state, _}, 100

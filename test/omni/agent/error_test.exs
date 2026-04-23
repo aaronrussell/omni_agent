@@ -85,6 +85,8 @@ defmodule Omni.Agent.ErrorTest do
 
       :ok = Agent.prompt(agent, "Hello!")
       assert_receive :step_started, 2000
+      # Make the synchronisation explicit before reaching into server state.
+      assert_receive {:agent, ^agent, :status, :running}, 2000
 
       server = :sys.get_state(agent)
       {step_pid, _ref} = server.step_task
@@ -125,6 +127,8 @@ defmodule Omni.Agent.ErrorTest do
       # Tool handler runs only after the executor has spawned and set
       # server.executor_task — this is a deterministic sync point.
       assert_receive :tool_started, 2000
+      # Make the synchronisation explicit before reaching into server state.
+      assert_receive {:agent, ^agent, :status, :running}, 2000
 
       server = :sys.get_state(agent)
       assert {executor_pid, _ref} = server.executor_task
@@ -155,6 +159,8 @@ defmodule Omni.Agent.ErrorTest do
 
       :ok = Agent.prompt(agent, "Hello!")
       assert_receive :step_started, 2000
+      # Make the synchronisation explicit before reaching into server state.
+      assert_receive {:agent, ^agent, :status, :running}, 2000
 
       server = :sys.get_state(agent)
       {step_pid, _ref} = server.step_task

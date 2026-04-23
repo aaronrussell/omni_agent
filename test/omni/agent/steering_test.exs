@@ -41,11 +41,19 @@ defmodule Omni.Agent.SteeringTest do
     test "staged prompt overrides {:stop} at turn boundary" do
       stub_name = unique_stub_name()
       {:ok, counter} = Elixir.Agent.start_link(fn -> 0 end)
+      parent = self()
+      gate_ref = make_ref()
 
       Req.Test.stub(stub_name, fn conn ->
         call_num = Elixir.Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-        # First call is slow so we can stage a prompt while running
-        if call_num == 0, do: Process.sleep(200)
+        # First call blocks until the test stages the follow-up prompt.
+        if call_num == 0 do
+          send(parent, {:llm_called, gate_ref, self()})
+
+          receive do
+            {:release, ^gate_ref} -> :ok
+          end
+        end
 
         body = File.read!(@text_fixture)
 
@@ -62,8 +70,9 @@ defmodule Omni.Agent.SteeringTest do
         )
 
       :ok = Agent.prompt(agent, "Hello!")
-      Process.sleep(50)
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
       :ok = Agent.prompt(agent, "Follow up!")
+      send(plug_pid, {:release, gate_ref})
 
       events = collect_events(agent)
 
@@ -75,7 +84,27 @@ defmodule Omni.Agent.SteeringTest do
 
     test "last-one-wins: second staged prompt replaces first" do
       stub_name = unique_stub_name()
-      stub_slow(stub_name, @text_fixture, 300)
+      {:ok, counter} = Elixir.Agent.start_link(fn -> 0 end)
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        call_num = Elixir.Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        # First call blocks until the test stages both follow-up prompts.
+        if call_num == 0 do
+          send(parent, {:llm_called, gate_ref, self()})
+
+          receive do
+            {:release, ^gate_ref} -> :ok
+          end
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
 
       {:ok, agent} =
         Agent.start_link(
@@ -85,9 +114,10 @@ defmodule Omni.Agent.SteeringTest do
         )
 
       :ok = Agent.prompt(agent, "Hello!")
-      Process.sleep(50)
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
       :ok = Agent.prompt(agent, "First follow-up")
       :ok = Agent.prompt(agent, "Second follow-up")
+      send(plug_pid, {:release, gate_ref})
 
       # The second prompt should win — agent will continue after first turn
       events = collect_events(agent)
@@ -188,11 +218,19 @@ defmodule Omni.Agent.SteeringTest do
       # But if we stage a prompt, it should use our prompt instead
       stub_name = unique_stub_name()
       {:ok, counter} = Elixir.Agent.start_link(fn -> 0 end)
+      parent = self()
+      gate_ref = make_ref()
 
       Req.Test.stub(stub_name, fn conn ->
         call_num = Elixir.Agent.get_and_update(counter, fn n -> {n, n + 1} end)
-        # First call is slow so we can stage a prompt while running
-        if call_num == 0, do: Process.sleep(200)
+        # First call blocks until the test stages the redirect prompt.
+        if call_num == 0 do
+          send(parent, {:llm_called, gate_ref, self()})
+
+          receive do
+            {:release, ^gate_ref} -> :ok
+          end
+        end
 
         body = File.read!(@text_fixture)
 
@@ -209,9 +247,10 @@ defmodule Omni.Agent.SteeringTest do
         )
 
       :ok = Agent.prompt(agent, "Start")
-      Process.sleep(50)
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
       # Stage a prompt while the first step is running
       :ok = Agent.prompt(agent, "Redirect!")
+      send(plug_pid, {:release, gate_ref})
 
       events = collect_events(agent)
 

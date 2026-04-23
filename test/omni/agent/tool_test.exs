@@ -117,12 +117,15 @@ defmodule Omni.Agent.ToolTest do
 
   describe "cancel during tool execution" do
     test "cancels and discards pending messages" do
+      test_pid = self()
+
       slow_tool =
         Omni.tool(
           name: "get_weather",
           description: "Gets the weather",
           input_schema: %{type: "object", properties: %{location: %{type: "string"}}},
           handler: fn _input ->
+            send(test_pid, :tool_started)
             Process.sleep(5000)
             "result"
           end
@@ -135,8 +138,9 @@ defmodule Omni.Agent.ToolTest do
         )
 
       :ok = Agent.prompt(agent, "What's the weather?")
-      # Wait for step to complete and executor to start
-      Process.sleep(200)
+      # The tool handler runs only after the executor has spawned — this is
+      # a deterministic in-flight signal.
+      assert_receive :tool_started, 2000
       :ok = Agent.cancel(agent)
 
       events = collect_events(agent, 2000)

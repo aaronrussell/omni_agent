@@ -64,9 +64,8 @@ defmodule Omni.Session.IdleShutdownTest do
       {session, _} = start_session(ctx, subscribe: true, idle_shutdown_after: 200)
 
       :ok = Session.unsubscribe(session)
-      # Wait briefly so the timer arms, then re-subscribe.
-      Process.sleep(50)
-      assert :sys.get_state(session).shutdown_timer != nil
+      # Wait for the timer to arm, then re-subscribe.
+      assert eventually(fn -> :sys.get_state(session).shutdown_timer != nil end)
 
       {:ok, _} = Session.subscribe(session)
       assert :sys.get_state(session).shutdown_timer == nil
@@ -80,8 +79,7 @@ defmodule Omni.Session.IdleShutdownTest do
 
       # Drop controllers to 0 to arm the timer.
       :ok = Session.unsubscribe(session)
-      Process.sleep(20)
-      assert :sys.get_state(session).shutdown_timer != nil
+      assert eventually(fn -> :sys.get_state(session).shutdown_timer != nil end)
 
       # Re-subscribe as observer so we receive the :status event but aren't a
       # controller (which would also cancel the timer).
@@ -98,9 +96,7 @@ defmodule Omni.Session.IdleShutdownTest do
       assert_receive {:session, ^session, :status, :idle}, 2000
       # Controllers are still zero and agent is idle, so a fresh timer arms
       # now — verify it's a NEW timer (not the originally-armed one).
-      Process.sleep(20)
-      new_timer = :sys.get_state(session).shutdown_timer
-      assert new_timer != nil
+      assert eventually(fn -> :sys.get_state(session).shutdown_timer != nil end)
     end
   end
 
@@ -160,9 +156,8 @@ defmodule Omni.Session.IdleShutdownTest do
       # so :status goes idle and arms the timer.
       :ok = Session.prompt(session, "Hello!")
       assert_receive {:session, ^session, :status, :idle}, 2000
-      # Give the handle_info for :idle a tick.
-      Process.sleep(20)
-      assert :sys.get_state(session).shutdown_timer != nil
+      # Wait for the handle_info for :idle to land and arm the timer.
+      assert eventually(fn -> :sys.get_state(session).shutdown_timer != nil end)
 
       # Upgrade to controller — cancels the timer.
       {:ok, _} = Session.subscribe(session, mode: :controller)

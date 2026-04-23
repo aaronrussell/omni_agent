@@ -102,11 +102,12 @@ defmodule Omni.Agent.StateTest do
       {:ok, agent} =
         Agent.start_link(
           model: model(),
+          subscribe: true,
           opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
         )
 
       :ok = Agent.prompt(agent, "Hello!")
-      Process.sleep(50)
+      assert_receive {:agent, ^agent, :status, :running}, 1000
       assert {:error, :running} = Agent.set_state(agent, system: "new")
       Agent.cancel(agent)
       _events = collect_events(agent, 2000)

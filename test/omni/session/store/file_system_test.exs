@@ -129,7 +129,7 @@ defmodule Omni.Session.Store.FileSystemTest do
       meta1 = read_session_json(ctx, "s1")
       nodes1 = read_nodes_jsonl(ctx, "s1")
 
-      Process.sleep(10)
+      Process.sleep(50)
       {:ok, navigated} = Tree.navigate(tree, 6)
       :ok = FileSystem.save_tree(cfg(ctx), "s1", navigated, new_node_ids: [])
 
@@ -269,7 +269,7 @@ defmodule Omni.Session.Store.FileSystemTest do
       {:ok, updated1, _} = DateTime.from_iso8601(meta1["updated_at"])
       assert created1 == updated1
 
-      Process.sleep(10)
+      Process.sleep(50)
       :ok = FileSystem.save_state(cfg(ctx), "s1", %{title: "x"})
 
       meta2 = read_session_json(ctx, "s1")
@@ -314,7 +314,7 @@ defmodule Omni.Session.Store.FileSystemTest do
 
     test "lists multiple sessions sorted by updated_at descending", ctx do
       :ok = FileSystem.save_tree(cfg(ctx), "older", sample_tree())
-      Process.sleep(10)
+      Process.sleep(50)
       :ok = FileSystem.save_tree(cfg(ctx), "newer", sample_tree())
 
       {:ok, [first, second]} = FileSystem.list(cfg(ctx))
@@ -345,7 +345,7 @@ defmodule Omni.Session.Store.FileSystemTest do
     test "honours :limit", ctx do
       for i <- 1..5 do
         :ok = FileSystem.save_tree(cfg(ctx), "s#{i}", sample_tree())
-        Process.sleep(5)
+        Process.sleep(50)
       end
 
       {:ok, list} = FileSystem.list(cfg(ctx), limit: 2)
@@ -355,7 +355,7 @@ defmodule Omni.Session.Store.FileSystemTest do
     test "honours :offset", ctx do
       for i <- 1..4 do
         :ok = FileSystem.save_tree(cfg(ctx), "s#{i}", sample_tree())
-        Process.sleep(5)
+        Process.sleep(50)
       end
 
       {:ok, all} = FileSystem.list(cfg(ctx))
@@ -368,7 +368,7 @@ defmodule Omni.Session.Store.FileSystemTest do
     test ":limit and :offset paginate the full set", ctx do
       for i <- 1..5 do
         :ok = FileSystem.save_tree(cfg(ctx), "s#{i}", sample_tree())
-        Process.sleep(5)
+        Process.sleep(50)
       end
 
       {:ok, page1} = FileSystem.list(cfg(ctx), limit: 2, offset: 0)

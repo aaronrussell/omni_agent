@@ -175,10 +175,26 @@ defmodule Omni.Agent.LifecycleTest do
 
       :ok = Agent.prompt(agent, "Hello!")
 
-      # No subscribers — events go nowhere. Wait for idle by polling status.
-      Process.sleep(500)
-      assert Agent.get_state(agent, :status) == :idle
-      assert length(Agent.get_state(agent, :messages)) == 2
+      # No subscribers — events go nowhere. Poll status to detect the
+      # transition back to :idle once the turn completes.
+      deadline = System.monotonic_time(:millisecond) + 2000
+
+      wait_idle = fn wait_idle ->
+        cond do
+          Agent.get_state(agent, :status) == :idle and
+              length(Agent.get_state(agent, :messages)) == 2 ->
+            :ok
+
+          System.monotonic_time(:millisecond) > deadline ->
+            flunk("agent did not return to :idle within 2000ms")
+
+          true ->
+            Process.sleep(10)
+            wait_idle.(wait_idle)
+        end
+      end
+
+      :ok = wait_idle.(wait_idle)
 
       # No :agent messages should have been delivered to the test mailbox.
       refute_receive {:agent, ^agent, _type, _data}, 50

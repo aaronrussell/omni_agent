@@ -129,11 +129,13 @@ defmodule Omni.Session.SubscribeModesTest do
       assert MapSet.member?(:sys.get_state(session).controllers, pid)
 
       send(pid, :die)
-      Process.sleep(50)
 
-      state = :sys.get_state(session)
-      refute MapSet.member?(state.subscribers, pid)
-      refute MapSet.member?(state.controllers, pid)
+      assert eventually(fn ->
+               state = :sys.get_state(session)
+
+               not MapSet.member?(state.subscribers, pid) and
+                 not MapSet.member?(state.controllers, pid)
+             end)
     end
 
     test "observer pid death removes from subscribers", ctx do
@@ -154,9 +156,10 @@ defmodule Omni.Session.SubscribeModesTest do
       assert MapSet.member?(:sys.get_state(session).subscribers, pid)
 
       send(pid, :die)
-      Process.sleep(50)
 
-      refute MapSet.member?(:sys.get_state(session).subscribers, pid)
+      assert eventually(fn ->
+               not MapSet.member?(:sys.get_state(session).subscribers, pid)
+             end)
     end
   end
 

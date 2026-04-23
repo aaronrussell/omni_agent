@@ -79,14 +79,15 @@ defmodule Omni.Agent.OrderingTest do
 
   # get_weather handler that sleeps for "London" so the first tool_use in the
   # 2-tool fixture completes *after* the second. Lets tests prove output order
-  # ignores executor completion order.
+  # ignores executor completion order. Differential bumped to 250 ms so the
+  # ordering holds even on slow CI scheduler jitter.
   defp timed_weather_tool do
     Omni.tool(
       name: "get_weather",
       description: "Gets the weather",
       input_schema: %{type: "object", properties: %{location: %{type: "string"}}},
       handler: fn input ->
-        if input["location"] == "London", do: Process.sleep(100)
+        if input["location"] == "London", do: Process.sleep(250)
         "#{input["location"]}: 72F"
       end
     )

@@ -41,8 +41,10 @@ defmodule Omni.Session.PubsubTest do
 
       :ok = Session.prompt(session, "Hello")
 
-      # Wait a beat for the turn to complete.
-      Process.sleep(500)
+      # Wait until each collector has observed the terminating :turn event.
+      for collector <- collectors do
+        assert_receive {^collector, :turn_complete}, 2000
+      end
 
       # Tell each collector to dump its event types.
       for collector <- collectors, do: send(collector, :dump)
@@ -72,8 +74,30 @@ defmodule Omni.Session.PubsubTest do
       {session, _} = start_session(ctx)
       :ok = Session.unsubscribe(session)
 
+      # Use a separate observer pid as the positive sync point: once the
+      # observer has seen the turn complete, the session has emitted all
+      # the events for this turn. Then we can safely refute_received on
+      # the test mailbox to confirm we got nothing.
+      test_pid = self()
+      ref = make_ref()
+
+      observer =
+        spawn(fn ->
+          {:ok, _} = Session.subscribe(session, mode: :observer)
+          send(test_pid, {:observer_ready, ref})
+
+          receive do
+            {:session, _, :turn, {:stop, _}} -> send(test_pid, {:observer_done, ref})
+          after
+            2000 -> send(test_pid, {:observer_done, ref})
+          end
+        end)
+
+      _ = observer
+      assert_receive {:observer_ready, ^ref}, 1000
+
       :ok = Session.prompt(session, "Hello")
-      Process.sleep(300)
+      assert_receive {:observer_done, ^ref}, 3000
 
       refute_received {:session, ^session, _type, _data}
     end
@@ -98,9 +122,10 @@ defmodule Omni.Session.PubsubTest do
       assert MapSet.member?(:sys.get_state(session).subscribers, collector)
 
       send(collector, :die)
-      Process.sleep(100)
 
-      refute MapSet.member?(:sys.get_state(session).subscribers, collector)
+      assert eventually(fn ->
+               not MapSet.member?(:sys.get_state(session).subscribers, collector)
+             end)
     end
   end
 
@@ -130,6 +155,10 @@ defmodule Omni.Session.PubsubTest do
     receive do
       :dump ->
         send(test_pid, {self(), :events, Enum.reverse(acc)})
+
+      {:session, _, :turn, {:stop, _} = data} = _msg ->
+        send(test_pid, {self(), :turn_complete})
+        collect_loop([{:turn, data} | acc], test_pid)
 
       {:session, _, type, data} ->
         collect_loop([{type, data} | acc], test_pid)
