@@ -56,7 +56,7 @@ defmodule Omni.Session.NavigationTest do
 
       # Node 1 is the user root. Navigating to it would leave path on
       # a user message, violating the Agent's messages invariant.
-      assert {:error, _} = Session.navigate(session, 1)
+      assert {:error, :invalid_messages} = Session.navigate(session, 1)
       assert Session.get_tree(session).path == [1, 2]
     end
 

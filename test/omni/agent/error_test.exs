@@ -235,9 +235,15 @@ defmodule Omni.Agent.ErrorTest do
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
-      # Should have a :retry event followed by :stop
-      retry_events = for {:retry, _data} <- events, do: :ok
-      assert length(retry_events) == 1
+      # Should have a :retry event followed by :stop. Capture the payload
+      # to confirm the event actually carried the original error term — a
+      # regression that emitted :retry with no payload would still pass a
+      # bare length check.
+      assert [retry_reason] = for({:retry, payload} <- events, do: payload)
+      refute is_nil(retry_reason), "expected :retry event to carry the error term"
+
+      # And confirm the retry actually flowed through handle_error.
+      assert Agent.get_state(agent, :private).retries == 1
 
       assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
 

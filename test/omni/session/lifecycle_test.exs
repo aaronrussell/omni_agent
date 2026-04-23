@@ -190,7 +190,10 @@ defmodule Omni.Session.LifecycleTest do
       ref = Process.monitor(session)
       Process.exit(agent, :kill)
 
-      assert_receive {:DOWN, ^ref, :process, ^session, _}, 1000
+      # Session is linked to the Agent and does not trap exits — it
+      # inherits the Agent's exit reason. A graceful :normal would
+      # indicate the link cascade isn't actually firing.
+      assert_receive {:DOWN, ^ref, :process, ^session, :killed}, 1000
     end
   end
 end

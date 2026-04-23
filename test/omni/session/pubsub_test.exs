@@ -131,11 +131,29 @@ defmodule Omni.Session.PubsubTest do
 
   describe "get_snapshot/1" do
     test "returns the session + agent snapshot at call time", ctx do
-      {session, _} = start_session(ctx)
+      {session, _} = start_session(ctx, subscribe: false)
+
+      # Run a turn so the snapshot has committed history to reflect.
+      :ok = Session.prompt(session, "hi")
+      {:ok, _} = Session.subscribe(session)
+      assert_receive {:session, ^session, :turn, {:stop, _}}, 2000
+      :ok = Session.unsubscribe(session)
 
       snapshot = Session.get_snapshot(session)
-      assert %Snapshot{} = snapshot
-      assert snapshot.id == :sys.get_state(session).id
+
+      assert %Snapshot{
+               id: id,
+               title: nil,
+               tree: %Tree{} = tree,
+               agent: %Omni.Agent.Snapshot{state: %Omni.Agent.State{} = agent_state}
+             } = snapshot
+
+      assert id == :sys.get_state(session).id
+      assert Tree.size(tree) == 2
+
+      # The cross-component consistency invariant from Snapshot's @moduledoc:
+      # the tree's committed messages mirror the agent's committed messages.
+      assert Tree.messages(tree) == agent_state.messages
     end
   end
 
