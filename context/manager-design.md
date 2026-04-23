@@ -151,7 +151,7 @@ defmodule MyApp.Sessions do
   def whereis(id),            do: Omni.Session.Manager.whereis(__MODULE__, id)
   def list(opts \\ []),       do: Omni.Session.Manager.list(__MODULE__, opts)
   def list_running(),         do: Omni.Session.Manager.list_running(__MODULE__)
-  def subscribe(opts \\ []),  do: Omni.Session.Manager.subscribe(__MODULE__, opts)
+  def subscribe(),            do: Omni.Session.Manager.subscribe(__MODULE__)
   def unsubscribe(),          do: Omni.Session.Manager.unsubscribe(__MODULE__)
 end
 ```
@@ -524,20 +524,32 @@ via `Session.get_agent(pid)`).
 ### Pub/sub
 
 ```elixir
-Manager.subscribe(opts \\ []) :: {:ok, Tracker.Snapshot.t()}
+Manager.subscribe() :: {:ok, [entry()]}
 Manager.unsubscribe() :: :ok
 ```
 
-The snapshot is a list of `%{id, title, status, pid}` maps, one per
-currently-running session, captured atomically at subscribe time. After
-subscription, the caller receives:
+where
 
 ```elixir
-{:manager, pid, :session_added,   %{id, title, status, pid: session_pid}}
-{:manager, pid, :session_status,  %{id, status}}
-{:manager, pid, :session_title,   %{id, title}}
-{:manager, pid, :session_removed, %{id}}
+entry() :: %{id: id(), title: String.t() | nil, status: :idle | :running | :paused, pid: pid()}
 ```
+
+The snapshot is a list of `entry()` maps (the same shape as
+`list_running/0`), one per currently-running session, captured
+atomically at subscribe time. After subscription, the caller receives:
+
+```elixir
+{:manager, manager_module, :session_added,   %{id, title, status, pid}}
+{:manager, manager_module, :session_status,  %{id, status}}
+{:manager, manager_module, :session_title,   %{id, title}}
+{:manager, manager_module, :session_removed, %{id}}
+```
+
+The second element is the Manager module atom — the same name the
+caller already holds (`MyApp.Sessions`) — not a pid. The Tracker pid
+is a supervision-tree internal the user can't do anything with, whereas
+the module name is directly pattern-matchable and naturally
+distinguishes events across multiple Managers.
 
 Subscribers are monitored and cleaned up on death. No filtering by id —
 consumers filter client-side if they only care about specific sessions.
@@ -627,8 +639,8 @@ Manager.list_running()       :: [%{id, title, status, pid}]
 ### Manager-level pub/sub
 
 ```elixir
-Manager.subscribe(opts \\ [])    :: {:ok, Tracker.Snapshot.t()}
-Manager.unsubscribe()            :: :ok
+Manager.subscribe()    :: {:ok, [entry()]}
+Manager.unsubscribe()  :: :ok
 ```
 
 Described under "The Tracker" above.
@@ -688,16 +700,18 @@ Session's existing events (including the new `:status`) remain
 unchanged. Manager adds its own event namespace:
 
 ```elixir
-{:manager, manager_pid, :session_added,   %{id, title, status, pid}}
-{:manager, manager_pid, :session_status,  %{id, status}}
-{:manager, manager_pid, :session_title,   %{id, title}}
-{:manager, manager_pid, :session_removed, %{id}}
+{:manager, manager_module, :session_added,   %{id, title, status, pid}}
+{:manager, manager_module, :session_status,  %{id, status}}
+{:manager, manager_module, :session_title,   %{id, title}}
+{:manager, manager_module, :session_removed, %{id}}
 ```
 
-`manager_pid` is the pid of the Tracker (which is also the subscription
-owner — subscriptions die with it). Using the Tracker pid (rather than
-the Supervisor pid) lets consumers distinguish events cleanly across
-multiple Managers.
+The second element is the Manager module atom (`MyApp.Sessions`) —
+the same name the caller passed to `Manager.subscribe`. Using the module
+rather than the Tracker pid lets subscribers pattern-match directly on a
+known-at-compile-time value and naturally distinguishes events across
+multiple Managers, while avoiding the question "what would a user *do*
+with the Tracker pid?" — nothing useful.
 
 ### Ordering
 
@@ -880,8 +894,10 @@ Items worth revisiting during implementation:
    read from the Tracker, but `list_running` is a synchronous call and
    `subscribe` returns a snapshot atomically. If a consumer calls
    `list_running` then `subscribe` in quick succession, they may get
-   slightly different views (a session added in between). Document as
-   "consistency is per-call, not across calls."
+   slightly different views (a session added in between). **Resolved:**
+   consistency is per-call, not across calls — documented behaviour.
+   Consumers that need a single atomic view use `subscribe` (snapshot +
+   live tail in one call).
 
 4. **Telemetry / observability.** Manager operations (create, open,
    delete) are good telemetry-emission points. Deferred to a dedicated

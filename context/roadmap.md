@@ -182,25 +182,37 @@ implementation) for the duplicate-id check, and a Session `init/1`
 guard that returns `{:error, :already_exists}` when `new: <binary>`
 collides with persisted state (`new: :auto` skips the check).
 
----
-
-## Upcoming phases
-
-### Phase 9c — Tracker and Manager-level pub/sub
+### Phase 9c — Tracker and Manager-level pub/sub *(done)*
 
 **Spec:** `manager-design.md` (The Tracker, Events, Public API §
 list_running / subscribe).
 
-Add `Omni.Session.Manager.Tracker` as the third child of the Manager
-supervisor. Manager synchronously calls `Tracker.add/2` on
-`create`/`open` before returning the pid, so tracked state is
-consistent with caller-visible state. Tracker subscribes to each
-session as `:observer` and maintains `%{id => %{title, status, pid}}`
-derived from Session events. Exposes `Manager.list_running/1`
-(sync snapshot) and `Manager.subscribe/1` (atomic snapshot + live
-`{:manager, pid, type, payload}` events for `:session_added` /
-`:session_status` / `:session_title` / `:session_removed`). Tracker
-crash-recovers by re-enumerating the Registry and re-subscribing.
+Shipped `Omni.Session.Manager.Tracker` as the third child of the
+Manager supervisor — an internal GenServer that observes every running
+session as `:observer` (lifetime-neutral) and maintains
+`%{id => %{id, title, status, pid}}`. `Manager.create/2` and
+`Manager.open/3` synchronously hand the pid off to `Tracker.add/3`
+before returning, so every pid a caller sees is already tracked;
+hand-off is idempotent on the `:existing` branch of `open`. New public
+API on the Manager: `list_running/1` (synchronous snapshot) and
+`subscribe/1` / `unsubscribe/1` (atomic snapshot on subscribe + live
+tail). Events are tagged `{:manager, ManagerModule, event, payload}`
+(module atom, not Tracker pid — the caller already holds the module,
+and it pattern-matches on a compile-time-known value): `:session_added`
+on create / `open :started` (suppressed on `:existing`),
+`:session_status` on Agent status transitions, `:session_title` on
+`set_title`, `:session_removed` on close / delete / crash /
+idle-shutdown. `use` macro grows `list_running/0`, `subscribe/0`,
+`unsubscribe/0` delegates. Tracker crash-recovers by enumerating the
+Manager's Registry on restart and re-subscribing silently; Manager-level
+subscribers from before the crash are dropped and must re-subscribe
+(documented).
+
+---
+
+## Upcoming phases
+
+_(none open)_
 
 ---
 

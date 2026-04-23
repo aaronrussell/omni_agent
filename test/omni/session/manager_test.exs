@@ -378,8 +378,22 @@ defmodule Omni.Session.ManagerTest do
       assert Manager.whereis(m1, "shared") == p1
       assert Manager.whereis(m2, "shared") == p2
 
+      ref = Process.monitor(p1)
       :ok = Manager.close(m1, "shared")
-      assert Manager.whereis(m1, "shared") == nil
+      assert_receive {:DOWN, ^ref, :process, ^p1, _}, 500
+
+      # Registry unregister is driven by its own monitor on the dying
+      # pid, so poll briefly for the unregister to land.
+      assert Enum.any?(1..50, fn _ ->
+               if Manager.whereis(m1, "shared") == nil,
+                 do: true,
+                 else:
+                   (
+                     Process.sleep(10)
+                     false
+                   )
+             end)
+
       assert Manager.whereis(m2, "shared") == p2
     end
   end

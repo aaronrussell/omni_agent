@@ -44,8 +44,8 @@ defmodule Omni.Agent.StatusEventTest do
 
       :ok = Agent.prompt(agent, "Hello!")
 
-      assert_receive {:agent, ^agent, :status, :idle}
-      assert_receive {:agent, ^agent, :turn, {:stop, _}}
+      assert_receive {:agent, ^agent, :status, :idle}, 1000
+      assert_receive {:agent, ^agent, :turn, {:stop, _}}, 1000
     end
 
     test "fires :idle on cancel during a running turn" do

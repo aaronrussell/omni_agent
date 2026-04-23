@@ -28,15 +28,33 @@ defmodule Omni.Session.Manager do
 
       MyApp.Sessions (Supervisor, :one_for_one)
       ├── MyApp.Sessions.Registry (Registry, keys: :unique)
-      └── MyApp.Sessions.DynamicSupervisor (DynamicSupervisor)
+      ├── MyApp.Sessions.DynamicSupervisor (DynamicSupervisor)
+      └── MyApp.Sessions.Tracker (GenServer)
 
   Sessions live under the DynamicSupervisor with `restart: :temporary` —
   on crash they do not auto-restart. The Registry maps session ids to
-  pids; on `close/2` or crash, entries are removed automatically.
+  pids; on `close/2` or crash, entries are removed automatically. The
+  Tracker observes every running session and powers `list_running/1`
+  plus the Manager-level `subscribe/1` feed.
 
   Running sessions outlive the caller that created them. The caller is
   auto-subscribed as a `:controller` by default, so idle-shutdown kicks
   in once the caller drops off (see `:idle_shutdown_after`).
+
+  ## Cross-session view
+
+  `list_running/1` returns a snapshot of all running sessions; each
+  entry is `%{id, title, status, pid}`. `subscribe/1` atomically returns
+  the same snapshot and starts streaming live events to the caller:
+
+      {:manager, MyApp.Sessions, :session_added,   %{id, title, status, pid}}
+      {:manager, MyApp.Sessions, :session_status,  %{id, status}}
+      {:manager, MyApp.Sessions, :session_title,   %{id, title}}
+      {:manager, MyApp.Sessions, :session_removed, %{id}}
+
+  The second element is the Manager module — what the caller already
+  holds — so subscribers watching multiple Managers route events by
+  pattern-matching.
 
   ## Configuration
 
@@ -70,9 +88,20 @@ defmodule Omni.Session.Manager do
   use Supervisor
 
   alias Omni.Session
+  alias Omni.Session.Manager.Tracker
 
   @type manager :: module()
   @type id :: Session.Store.session_id()
+
+  @typedoc """
+  Per-session entry returned by `list_running/1` and `subscribe/1`.
+  """
+  @type entry :: %{
+          id: id(),
+          title: String.t() | nil,
+          status: :idle | :running | :paused,
+          pid: pid()
+        }
 
   @manager_owned_opts [:store, :name, :new, :load]
   @default_idle_shutdown_after 300_000
@@ -104,6 +133,15 @@ defmodule Omni.Session.Manager do
 
       def list(opts \\ []),
         do: Omni.Session.Manager.list(__MODULE__, opts)
+
+      def list_running,
+        do: Omni.Session.Manager.list_running(__MODULE__)
+
+      def subscribe,
+        do: Omni.Session.Manager.subscribe(__MODULE__)
+
+      def unsubscribe,
+        do: Omni.Session.Manager.unsubscribe(__MODULE__)
     end
   end
 
@@ -145,7 +183,8 @@ defmodule Omni.Session.Manager do
 
     children = [
       {Registry, keys: :unique, name: registry_name(name)},
-      {DynamicSupervisor, name: dynsup_name(name), strategy: :one_for_one}
+      {DynamicSupervisor, name: dynsup_name(name), strategy: :one_for_one},
+      {Tracker, name: tracker_name(name), manager: name, registry: registry_name(name)}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
@@ -198,6 +237,7 @@ defmodule Omni.Session.Manager do
 
   defp registry_name(name), do: Module.concat(name, Registry)
   defp dynsup_name(name), do: Module.concat(name, DynamicSupervisor)
+  defp tracker_name(name), do: Module.concat(name, "Tracker")
   defp config_key(name), do: {__MODULE__, name}
   defp config(manager), do: :persistent_term.get(config_key(manager))
 
@@ -233,9 +273,14 @@ defmodule Omni.Session.Manager do
         |> Keyword.delete(:id)
         |> Keyword.put(:new, id)
 
-      manager
-      |> start_session(id, session_opts, caller)
-      |> normalise_create_result()
+      case start_session(manager, id, session_opts, caller) do
+        {:ok, pid} ->
+          :ok = Tracker.add(tracker_name(manager), id, pid)
+          {:ok, pid}
+
+        {:error, reason} ->
+          normalise_create_result({:error, reason})
+      end
     end
   end
 
@@ -270,9 +315,11 @@ defmodule Omni.Session.Manager do
 
       case start_session(manager, id, session_opts, caller) do
         {:ok, pid} ->
+          :ok = Tracker.add(tracker_name(manager), id, pid)
           {:ok, :started, pid}
 
         {:error, {:already_started, pid}} ->
+          :ok = Tracker.add(tracker_name(manager), id, pid)
           :ok = subscribe_caller_on_existing(pid, caller, opts)
           {:ok, :existing, pid}
 
@@ -332,6 +379,50 @@ defmodule Omni.Session.Manager do
   @spec list(manager(), keyword()) :: {:ok, [Session.Store.session_info()]}
   def list(manager, opts \\ []) when is_atom(manager) and is_list(opts) do
     Session.Store.list(config(manager).store, opts)
+  end
+
+  @doc """
+  Returns the list of sessions currently running under this Manager.
+
+  Each entry is a `%{id, title, status, pid}` map. Ordering is
+  unspecified — callers sort client-side.
+
+  Complements `list/2` (store-backed, may include sessions that are not
+  running). The two are commonly composed to render an "all sessions
+  with running indicator" view.
+  """
+  @spec list_running(manager()) :: [entry()]
+  def list_running(manager) when is_atom(manager) do
+    GenServer.call(tracker_name(manager), :list_running)
+  end
+
+  @doc """
+  Subscribes the caller to Manager-level session events.
+
+  Returns an atomic snapshot of currently-running sessions. After the
+  call returns, the caller receives messages of shape:
+
+      {:manager, manager_module, :session_added,   %{id, title, status, pid}}
+      {:manager, manager_module, :session_status,  %{id, status}}
+      {:manager, manager_module, :session_title,   %{id, title}}
+      {:manager, manager_module, :session_removed, %{id}}
+
+  The second element is the Manager module — the same atom the caller
+  passed in — so a subscriber watching multiple Managers can route
+  events by pattern-matching.
+
+  Idempotent per pid: subscribing a second time returns a fresh
+  snapshot without registering duplicate delivery.
+  """
+  @spec subscribe(manager()) :: {:ok, [entry()]}
+  def subscribe(manager) when is_atom(manager) do
+    GenServer.call(tracker_name(manager), {:subscribe, self()})
+  end
+
+  @doc "Unsubscribes the caller from Manager-level events."
+  @spec unsubscribe(manager()) :: :ok
+  def unsubscribe(manager) when is_atom(manager) do
+    GenServer.call(tracker_name(manager), {:unsubscribe, self()})
   end
 
   # ── Internals ──────────────────────────────────────────────────────
@@ -416,8 +507,6 @@ defmodule Omni.Session.Manager do
   end
 
   defp via_name(manager, id), do: {:via, Registry, {registry_name(manager), id}}
-
-  defp normalise_create_result({:ok, pid}), do: {:ok, pid}
 
   defp normalise_create_result({:error, {:already_started, _pid}}),
     do: {:error, :already_exists}
