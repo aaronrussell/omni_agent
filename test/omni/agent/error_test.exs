@@ -96,6 +96,7 @@ defmodule Omni.Agent.ErrorTest do
 
     test "executor crash emits :error with {:executor_crashed, reason}" do
       stub_name = unique_stub_name()
+      test_pid = self()
 
       # Step completes with tool_use, then executor runs the hanging tool
       stub_fixture(stub_name, @tool_use_fixture)
@@ -105,7 +106,10 @@ defmodule Omni.Agent.ErrorTest do
           name: "get_weather",
           description: "Gets the weather",
           input_schema: %{type: "object", properties: %{location: %{type: "string"}}},
-          handler: fn _input -> Process.sleep(:infinity) end
+          handler: fn _input ->
+            send(test_pid, :tool_started)
+            Process.sleep(:infinity)
+          end
         )
 
       {:ok, agent} =
@@ -118,8 +122,9 @@ defmodule Omni.Agent.ErrorTest do
 
       :ok = Agent.prompt(agent, "What's the weather?")
 
-      # Wait for step to complete and executor to spawn
-      Process.sleep(200)
+      # Tool handler runs only after the executor has spawned and set
+      # server.executor_task — this is a deterministic sync point.
+      assert_receive :tool_started, 2000
 
       server = :sys.get_state(agent)
       assert {executor_pid, _ref} = server.executor_task

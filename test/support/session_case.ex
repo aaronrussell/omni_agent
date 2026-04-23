@@ -54,6 +54,22 @@ defmodule Omni.Session.SessionCase do
         :"session_test_#{System.unique_integer([:positive])}"
       end
 
+      # Polls `fun` every 10ms up to `timeout` ms. Use for races where a
+      # downstream side-effect (e.g. Registry unregister on a DOWN) must
+      # land after the primary event has already been observed.
+      defp eventually(fun, timeout \\ 500) do
+        deadline = System.monotonic_time(:millisecond) + timeout
+        do_eventually(fun, deadline)
+      end
+
+      defp do_eventually(fun, deadline) do
+        cond do
+          fun.() -> true
+          System.monotonic_time(:millisecond) > deadline -> false
+          true -> Process.sleep(10); do_eventually(fun, deadline)
+        end
+      end
+
       # Start a session wired up against a fixture-stubbed HTTP endpoint.
       # Returns `{session_pid, stub_name}`.
       defp start_session(ctx, opts \\ []) do

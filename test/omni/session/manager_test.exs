@@ -265,7 +265,7 @@ defmodule Omni.Session.ManagerTest do
 
       assert :ok = Manager.close(m, "c")
       assert_receive {:DOWN, ^ref, :process, ^pid, _}
-      assert Manager.whereis(m, "c") == nil
+      assert eventually(fn -> Manager.whereis(m, "c") == nil end)
     end
 
     test "is idempotent when the id has never run", %{manager: m} do
@@ -290,7 +290,7 @@ defmodule Omni.Session.ManagerTest do
       :ok = Omni.Session.set_title(pid, "persist me")
 
       assert :ok = Manager.delete(m, "d")
-      assert Manager.whereis(m, "d") == nil
+      assert eventually(fn -> Manager.whereis(m, "d") == nil end)
       refute Omni.Session.Store.exists?(store, "d")
     end
 
@@ -381,18 +381,7 @@ defmodule Omni.Session.ManagerTest do
       ref = Process.monitor(p1)
       :ok = Manager.close(m1, "shared")
       assert_receive {:DOWN, ^ref, :process, ^p1, _}, 500
-
-      # Registry unregister is driven by its own monitor on the dying
-      # pid, so poll briefly for the unregister to land.
-      assert Enum.any?(1..50, fn _ ->
-               if Manager.whereis(m1, "shared") == nil,
-                 do: true,
-                 else:
-                   (
-                     Process.sleep(10)
-                     false
-                   )
-             end)
+      assert eventually(fn -> Manager.whereis(m1, "shared") == nil end)
 
       assert Manager.whereis(m2, "shared") == p2
     end
