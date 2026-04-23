@@ -33,6 +33,10 @@ defmodule Omni.Session.ManagerTest do
 
   defp session_state(pid), do: :sys.get_state(pid)
 
+  defp registry_pid(manager), do: Process.whereis(Module.concat(manager, Registry))
+  defp dynsup_pid(manager), do: Process.whereis(Module.concat(manager, DynamicSupervisor))
+  defp tracker_pid(manager), do: Process.whereis(Module.concat(manager, "Tracker"))
+
   # ── use macro ──────────────────────────────────────────────────────
 
   describe "use macro" do
@@ -424,6 +428,146 @@ defmodule Omni.Session.ManagerTest do
       assert_raise ArgumentError, ~r/:name/, fn ->
         Manager.start_link(store: tmp_store(ctx))
       end
+    end
+  end
+
+  # ── Supervision strategy (:rest_for_one) ───────────────────────────
+  #
+  # The Manager Supervisor's children are, in order:
+  #   1. Registry
+  #   2. DynamicSupervisor (parent of every Session process)
+  #   3. Tracker
+  #
+  # `:rest_for_one` means: when a child dies, only the children defined
+  # *after* it are also terminated and restarted. These three tests pin
+  # that behaviour — each one would fail under `:one_for_one` (sibling
+  # children would survive a child crash that should cascade) or
+  # `:one_for_all` (siblings before the crashed child would also die).
+
+  describe "supervision strategy" do
+    @describetag :capture_log
+
+    test "killing the Registry takes down DynSup, Tracker, and all running sessions", %{
+      manager: m
+    } do
+      {:ok, pid_a} = Manager.create(m, id: "a", agent: minimal_agent(), subscribe: false)
+      {:ok, pid_b} = Manager.create(m, id: "b", agent: minimal_agent(), subscribe: false)
+
+      registry = registry_pid(m)
+      dynsup = dynsup_pid(m)
+      tracker = tracker_pid(m)
+
+      monitors = [
+        {Process.monitor(registry), :registry, registry},
+        {Process.monitor(dynsup), :dynsup, dynsup},
+        {Process.monitor(tracker), :tracker, tracker},
+        {Process.monitor(pid_a), :session_a, pid_a},
+        {Process.monitor(pid_b), :session_b, pid_b}
+      ]
+
+      Process.exit(registry, :kill)
+
+      # All three children + both sessions terminate under :rest_for_one.
+      for {ref, label, pid} <- monitors do
+        assert_receive {:DOWN, ^ref, :process, ^pid, _},
+                       1000,
+                       "expected #{label} to terminate after Registry was killed"
+      end
+
+      # Supervisor brings the three children back under fresh pids.
+      assert eventually(fn ->
+               new_registry = registry_pid(m)
+               new_dynsup = dynsup_pid(m)
+               new_tracker = tracker_pid(m)
+
+               is_pid(new_registry) and new_registry != registry and
+                 is_pid(new_dynsup) and new_dynsup != dynsup and
+                 is_pid(new_tracker) and new_tracker != tracker
+             end)
+
+      # Sessions are temporary children — none come back.
+      assert eventually(fn -> Manager.list_running(m) == [] end)
+    end
+
+    test "killing the DynSup takes down Tracker and sessions; Registry survives", %{
+      manager: m
+    } do
+      {:ok, pid_a} = Manager.create(m, id: "a", agent: minimal_agent(), subscribe: false)
+
+      registry = registry_pid(m)
+      dynsup = dynsup_pid(m)
+      tracker = tracker_pid(m)
+
+      registry_ref = Process.monitor(registry)
+      dynsup_ref = Process.monitor(dynsup)
+      tracker_ref = Process.monitor(tracker)
+      session_ref = Process.monitor(pid_a)
+
+      Process.exit(dynsup, :kill)
+
+      # DynSup, the child after it (Tracker), and the session all die.
+      assert_receive {:DOWN, ^dynsup_ref, :process, ^dynsup, _}, 1000
+      assert_receive {:DOWN, ^tracker_ref, :process, ^tracker, _}, 1000
+      assert_receive {:DOWN, ^session_ref, :process, ^pid_a, _}, 1000
+
+      # Registry — the child *before* DynSup — does not die.
+      refute_receive {:DOWN, ^registry_ref, :process, _, _}, 200
+
+      # Registry pid is unchanged; DynSup and Tracker have fresh pids.
+      assert eventually(fn ->
+               new_dynsup = dynsup_pid(m)
+               new_tracker = tracker_pid(m)
+
+               registry_pid(m) == registry and
+                 is_pid(new_dynsup) and new_dynsup != dynsup and
+                 is_pid(new_tracker) and new_tracker != tracker
+             end)
+
+      # Sessions are gone.
+      assert eventually(fn -> Manager.list_running(m) == [] end)
+    end
+
+    test "killing the Tracker leaves Registry, DynSup, and sessions untouched", %{manager: m} do
+      {:ok, pid_a} = Manager.create(m, id: "a", agent: minimal_agent(), subscribe: false)
+
+      registry = registry_pid(m)
+      dynsup = dynsup_pid(m)
+      tracker = tracker_pid(m)
+
+      registry_ref = Process.monitor(registry)
+      dynsup_ref = Process.monitor(dynsup)
+      tracker_ref = Process.monitor(tracker)
+      session_ref = Process.monitor(pid_a)
+
+      Process.exit(tracker, :kill)
+
+      # Only Tracker dies.
+      assert_receive {:DOWN, ^tracker_ref, :process, ^tracker, _}, 1000
+
+      # The siblings before it must NOT die — that would mean :one_for_all.
+      refute_receive {:DOWN, ^registry_ref, :process, _, _}, 200
+      refute_receive {:DOWN, ^dynsup_ref, :process, _, _}, 200
+      refute_receive {:DOWN, ^session_ref, :process, _, _}, 200
+
+      # Registry and DynSup pids are unchanged; Tracker has a fresh pid.
+      assert eventually(fn ->
+               new_tracker = tracker_pid(m)
+
+               registry_pid(m) == registry and
+                 dynsup_pid(m) == dynsup and
+                 is_pid(new_tracker) and new_tracker != tracker
+             end)
+
+      # Pre-existing session is still alive.
+      assert Process.alive?(pid_a)
+
+      # And the new Tracker rebuilt its view from the Registry.
+      assert eventually(fn ->
+               case Manager.list_running(m) do
+                 [%{id: "a", pid: ^pid_a}] -> true
+                 _ -> false
+               end
+             end)
     end
   end
 end
