@@ -651,12 +651,7 @@ defmodule Omni.Session do
 
   def handle_call({:navigate, node_id}, _from, session) do
     with :ok <- require_idle(session),
-         {:ok, new_tree} <- Tree.navigate(session.tree, node_id),
-         messages = Tree.messages(new_tree),
-         :ok <- Agent.set_state(session.agent, messages: messages) do
-      session = %{session | tree: new_tree}
-      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
-      session = persist_tree(session, [])
+         {:ok, session} <- apply_navigation(session, node_id, &Tree.messages/1) do
       {:reply, :ok, session}
     else
       {:error, _} = error -> {:reply, error, session}
@@ -667,12 +662,9 @@ defmodule Omni.Session do
     with :ok <- require_idle(session),
          {:ok, node} <- fetch_node(session.tree, node_id),
          :ok <- require_role(node, :user, :not_user_node),
-         {:ok, new_tree} <- Tree.navigate(session.tree, node_id),
-         parent_messages = Enum.drop(Tree.messages(new_tree), -1),
-         :ok <- Agent.set_state(session.agent, messages: parent_messages) do
-      session = %{session | tree: new_tree, regen_source: node_id}
-      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
-      session = persist_tree(session, [])
+         parent_messages_fn = &Enum.drop(Tree.messages(&1), -1),
+         {:ok, session} <- apply_navigation(session, node_id, parent_messages_fn) do
+      session = %{session | regen_source: node_id}
       :ok = Agent.prompt(session.agent, node.message.content)
       {:reply, :ok, session}
     else
@@ -682,11 +674,7 @@ defmodule Omni.Session do
 
   def handle_call({:branch, nil, content}, _from, session) do
     with :ok <- require_idle(session),
-         {:ok, new_tree} <- Tree.navigate(session.tree, nil),
-         :ok <- Agent.set_state(session.agent, messages: []) do
-      session = %{session | tree: new_tree}
-      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
-      session = persist_tree(session, [])
+         {:ok, session} <- apply_navigation(session, nil, fn _ -> [] end) do
       :ok = Agent.prompt(session.agent, content)
       {:reply, :ok, session}
     else
@@ -698,12 +686,7 @@ defmodule Omni.Session do
     with :ok <- require_idle(session),
          {:ok, node} <- fetch_node(session.tree, node_id),
          :ok <- require_role(node, :assistant, :not_assistant_node),
-         {:ok, new_tree} <- Tree.navigate(session.tree, node_id),
-         messages = Tree.messages(new_tree),
-         :ok <- Agent.set_state(session.agent, messages: messages) do
-      session = %{session | tree: new_tree}
-      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
-      session = persist_tree(session, [])
+         {:ok, session} <- apply_navigation(session, node_id, &Tree.messages/1) do
       :ok = Agent.prompt(session.agent, content)
       {:reply, :ok, session}
     else
@@ -897,6 +880,21 @@ defmodule Omni.Session do
 
   defp require_role(%{message: %{role: role}}, role, _err), do: :ok
   defp require_role(_node, _role, err), do: {:error, err}
+
+  # Shared backbone for navigate/branch handle_call clauses. Walks the
+  # tree to `target`, resyncs the Agent's committed messages, broadcasts
+  # `:tree`, and persists. `messages_fn` derives the Agent message list
+  # from the new tree (full path, parent path, or `[]`).
+  defp apply_navigation(session, target, messages_fn) do
+    with {:ok, new_tree} <- Tree.navigate(session.tree, target),
+         messages = messages_fn.(new_tree),
+         :ok <- Agent.set_state(session.agent, messages: messages) do
+      session = %{session | tree: new_tree}
+      broadcast(session, :tree, %{tree: new_tree, new_nodes: []})
+      session = persist_tree(session, [])
+      {:ok, session}
+    end
+  end
 
   # -- Persistence --
 

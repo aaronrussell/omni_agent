@@ -281,7 +281,7 @@ defmodule Omni.Agent.Server do
         _from,
         %__MODULE__{state: %{status: :idle}} = server
       ) do
-    {:reply, {:error, {:invalid_field, field}}, server}
+    {:reply, {:error, {:invalid_key, field}}, server}
   end
 
   # Catch-all for mutating ops while running or paused

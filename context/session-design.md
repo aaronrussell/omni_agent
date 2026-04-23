@@ -251,14 +251,25 @@ defmodule Omni.Session.Store do
   @callback delete(config :: term(), session_id(), keyword()) ::
               :ok | {:error, term()}
 
+  @callback exists?(config :: term(), session_id()) :: boolean()
+
   # Dispatch — callers invoke these; adapter module is the first element of
   # the tuple, config is the second.
   def save_tree({mod, config}, id, tree, opts \\ []),
     do: mod.save_tree(config, id, tree, opts)
 
-  # ... save_state, load, list, delete follow the same pattern
+  # ... save_state, load, list, delete, exists? follow the same pattern
 end
 ```
+
+`exists?/2` is a non-racy presence check: returns `true` iff `id` has
+persisted state in the adapter. Used by Session on
+`start_link(new: binary_id)` to reject single-caller duplicate-id
+collisions cleanly (`{:error, :already_exists}`) rather than silently
+overwriting. Adapter errors should surface as `false` — the caller
+treats "unsure" and "not present" identically. The check is not
+atomic with the subsequent write, so it does not eliminate the
+concurrent-writers race (see below).
 
 `list/2` **must** honour `:limit` and `:offset` in `opts`:
 
@@ -845,6 +856,7 @@ auto-generated IDs use the built-in helper.
 | `{:error, :ambiguous_mode}` | `:new` and `:load` both given |
 | `{:error, :not_found}` | `load:` id not in store |
 | `{:error, :no_model}` | `load:` resolution can't produce a model |
+| `{:error, :already_exists}` | `new: binary_id` where the id is already in the adapter (via `Store.exists?/2`) |
 | `{:error, :initial_messages_not_supported}` | `new:` with `agent: [messages: _]` |
 | `{:error, :not_idle}` | `navigate/2` or `branch/2,3` called during a running or paused turn |
 | `{:error, :not_found}` | `navigate/2` or `branch/2,3` to unknown node |
@@ -852,9 +864,13 @@ auto-generated IDs use the built-in helper.
 | `{:error, :not_assistant_node}` | `branch/3` target isn't an assistant node |
 | `{:error, reason}` from Agent | forwarded verbatim |
 
-The duplicate-id race on `new:` with explicit id is **accepted as a known
-edge case**. Two concurrent `start_link(new: "x")` calls can both succeed
-if neither has written yet; the first one to persist "wins" and subsequent
+Single-caller duplicate-id collisions on `new: binary_id` are caught
+via `Store.exists?/2` and return `{:error, :already_exists}`.
+
+The **concurrent** duplicate-id race remains **accepted as a known
+edge case**: `exists?`-then-write is not atomic, so two concurrent
+`start_link(new: "x")` calls can both pass the check and race on the
+subsequent write; the first one to persist "wins" and subsequent
 writes may conflict. Resolving this requires either an adapter-level
 `create_if_absent` primitive or a `Session.Manager` with process-level
 deduplication. Both are parked.

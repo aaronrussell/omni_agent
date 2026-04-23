@@ -319,8 +319,12 @@ defmodule Omni.Session.Manager do
           {:ok, :started, pid}
 
         {:error, {:already_started, pid}} ->
-          :ok = Tracker.add(tracker_name(manager), id, pid)
+          # Subscribe caller as controller before Tracker.add so the session
+          # is pinned against idle-shutdown before the Tracker emits
+          # :session_added — closes the timer race and the transient
+          # no-controller window visible to Manager-level subscribers.
           :ok = subscribe_caller_on_existing(pid, caller, opts)
+          :ok = Tracker.add(tracker_name(manager), id, pid)
           {:ok, :existing, pid}
 
         {:error, reason} ->
@@ -460,8 +464,8 @@ defmodule Omni.Session.Manager do
 
     session_opts =
       caller_opts
-      |> put_default(:store, cfg.store)
-      |> put_default(:idle_shutdown_after, cfg.idle_shutdown_after)
+      |> Keyword.put_new(:store, cfg.store)
+      |> Keyword.put_new(:idle_shutdown_after, cfg.idle_shutdown_after)
       |> inject_caller_subscriber(caller)
       |> Keyword.put(:name, via_name(manager, id))
 
@@ -473,10 +477,6 @@ defmodule Omni.Session.Manager do
     }
 
     DynamicSupervisor.start_child(dynsup_name(manager), child_spec)
-  end
-
-  defp put_default(opts, key, value) do
-    if Keyword.has_key?(opts, key), do: opts, else: Keyword.put(opts, key, value)
   end
 
   # The DynamicSupervisor is what actually calls `Session.start_link`, so

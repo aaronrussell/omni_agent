@@ -134,12 +134,12 @@ defmodule Omni.Agent.StateTest do
 
     test "rejects non-settable field status" do
       {:ok, agent} = start_agent()
-      assert {:error, {:invalid_field, :status}} = Agent.set_state(agent, :status, :running)
+      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, :status, :running)
     end
 
     test "rejects non-settable field private" do
       {:ok, agent} = start_agent()
-      assert {:error, {:invalid_field, :private}} = Agent.set_state(agent, :private, %{})
+      assert {:error, {:invalid_key, :private}} = Agent.set_state(agent, :private, %{})
     end
   end
 

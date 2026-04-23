@@ -668,7 +668,7 @@ defmodule Omni.Agent do
       Agent.set_state(agent, :tools, fn tools -> [new_tool | tools] end)
 
   Settable fields: `:model`, `:system`, `:messages`, `:tools`, `:opts`.
-  Returns `{:error, {:invalid_field, field}}` for other fields.
+  Returns `{:error, {:invalid_key, field}}` for other fields.
   Returns `{:error, :invalid_messages}` if `:messages` fails the invariant.
   Returns `{:error, :running}` if the agent is running or paused.
   """

@@ -190,7 +190,7 @@ children = [
 | Option | Required | Meaning |
 |---|---|---|
 | `:store` | yes | `{module, keyword()}` — the store adapter and its config. Used by every session this Manager starts and by `list/1` / `delete/1`. |
-| `:idle_shutdown_after` | no | `non_neg_integer() \| :infinity`. Default for sessions this Manager starts; overridden per-call via `idle_shutdown_after:` on `create`/`open`. Defaults to `300_000` (5 minutes) when absent. Set `:infinity` to disable Manager-wide. |
+| `:idle_shutdown_after` | no | `non_neg_integer() \| nil`. Default for sessions this Manager starts; overridden per-call via `idle_shutdown_after:` on `create`/`open`. Defaults to `300_000` (5 minutes) when absent. Set `nil` to disable Manager-wide. |
 | `:name` | no | Overrides the registered name (default: the `use`-ing module). Rarely needed. |
 
 Manager's config is deliberately minimal. There is no `agent_defaults`
@@ -227,13 +227,13 @@ Apps that want a different app-wide policy set it at Manager start:
 
 ```elixir
 {MyApp.Sessions, store: ..., idle_shutdown_after: 600_000}   # 10 min
-{MyApp.Sessions, store: ..., idle_shutdown_after: :infinity} # never
+{MyApp.Sessions, store: ..., idle_shutdown_after: nil}       # never
 ```
 
 Individual sessions override at create/open time:
 
 ```elixir
-MyApp.Sessions.create(idle_shutdown_after: :infinity)         # exempt this session
+MyApp.Sessions.create(idle_shutdown_after: nil)               # exempt this session
 MyApp.Sessions.create(idle_shutdown_after: 60_000)            # aggressive
 ```
 
@@ -418,19 +418,21 @@ Session also uses `:status` internally to drive idle-shutdown evaluation
 New Session start option:
 
 ```elixir
-:idle_shutdown_after :: non_neg_integer() | :infinity   # no default
+:idle_shutdown_after :: non_neg_integer() | nil   # no default
 ```
 
-When unset (or `:infinity`), the Session never self-shuts-down. When
-set to an integer, the rule: when **controller count is 0** AND
-**agent status is `:idle`**, Session schedules a `:idle_shutdown`
-message after `idle_shutdown_after` ms. If either condition breaks
-before the timer fires (a controller joins, agent goes running), the
-timer is cancelled. When the timer fires with conditions still true,
-Session calls `GenServer.stop(self(), :normal)`.
+When unset (or `nil`), the Session never self-shuts-down. When set to
+an integer, the rule: when **controller count is 0** AND **agent
+status is `:idle`**, Session schedules a `:idle_shutdown` message
+after `idle_shutdown_after` ms. If either condition breaks before the
+timer fires (a controller joins, agent goes running), the timer is
+cancelled. When the timer fires with conditions still true, Session
+calls `GenServer.stop(self(), :normal)`.
 
-When `idle_shutdown_after = 0`, no timer is used — the shutdown is
-performed synchronously in the handle clause that detects the condition.
+`idle_shutdown_after = 0` is a valid value — the same code path is
+used, with `Process.send_after(self(), :idle_shutdown, 0)` delivering
+the shutdown message on the next scheduler pass (effectively
+instantaneous).
 
 Standalone Session callers default to unset (never shut down). The
 Manager layer injects `idle_shutdown_after: 300_000` (its default) into
@@ -937,10 +939,10 @@ forwarding.
 - `Omni.Session` forwards Agent `:status` events as session events with
   the same tag.
 - `Omni.Session` gains `idle_shutdown_after` start opt
-  (`non_neg_integer() | :infinity`, no default — unset means never
-  shut down) and implements the controllers-zero + idle evaluation on
-  transitions, with a cancellable timer when the value is a positive
-  integer.
+  (`non_neg_integer() | nil`, no default — unset means never shut
+  down) and implements the controllers-zero + idle evaluation on
+  transitions, with a cancellable timer when the value is a
+  non-negative integer.
 - Session struct gains `controllers`, `observers`, `agent_status`,
   `shutdown_timer` fields (internal).
 - Tests cover: status event emission and forwarding; controller/observer
@@ -982,7 +984,7 @@ deferred to 9c.
 - Tests: create and open flows; already-running on open; id collision
   on create with explicit id; close idempotency; delete stops-then-
   deletes; opt filtering; `idle_shutdown_after` Manager default (300_000),
-  Manager-config override, per-call override, `:infinity` opt-out;
+  Manager-config override, per-call override, `nil` opt-out;
   multiple concurrent Managers by module name.
 
 **Dependencies:** Phase 9a.
