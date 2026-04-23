@@ -10,12 +10,12 @@ defmodule Omni.Agent.Snapshot do
 
   Fields:
 
-    * `:state` — the public `%Omni.Agent.State{}` (committed history,
-      model, tools, status, ...)
-    * `:pending` — messages accumulated during the in-flight turn,
-      not yet committed to `state.messages`
-    * `:partial` — the assistant message currently streaming, or `nil`
-      if no step is in progress
+  - `:state` — the public `%Omni.Agent.State{}` (committed history,
+    model, tools, status, ...)
+  - `:pending` — messages accumulated during the in-flight turn,
+    not yet committed to `state.messages`
+  - `:partial` — the assistant message currently streaming, or `nil`
+    if no step is in progress
   """
 
   alias Omni.Agent.State

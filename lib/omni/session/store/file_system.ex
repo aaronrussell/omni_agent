@@ -3,8 +3,14 @@ defmodule Omni.Session.Store.FileSystem do
   Reference `Omni.Session.Store` adapter using plain files on disk.
 
   Designed for local development, single-node deployments, and as a
-  worked example of the adapter contract. Each session lives in its own
-  directory with two files:
+  worked example of the adapter contract. Writes assume a single writer
+  per session id — safe within a single `Omni.Session` process, which
+  serialises writes through its mailbox, but not across nodes or
+  unrelated processes opening the same id. For multi-node deployments,
+  implement a custom adapter against a shared store such as Postgres
+  or S3.
+
+  Each session lives in its own directory with two files:
 
       <base_path>/
         <session_id>/

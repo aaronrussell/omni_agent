@@ -19,6 +19,40 @@ defmodule Omni.Session.Tree do
   the current head to a leaf, reconstructing a full path after navigating to a
   mid-tree branch point.
 
+  ## Example
+
+  A fresh tree is empty. Push messages to build up an active path; node
+  ids are auto-assigned starting at `1`:
+
+      tree =
+        %Tree{}
+        |> Tree.push(%Message{role: :user, content: "..."})
+        |> Tree.push(%Message{role: :assistant, content: "..."})
+        |> Tree.push(%Message{role: :user, content: "..."})
+        |> Tree.push(%Message{role: :assistant, content: "..."})
+
+      Tree.messages(tree)   #=> [user, assistant, user, assistant]
+      Tree.size(tree)       #=> 4
+
+  Navigate back to an earlier node, then push — this creates a branch:
+
+      {:ok, tree} = Tree.navigate(tree, 3)
+      tree = Tree.push(tree, %Message{role: :assistant, content: "..."})
+
+      Tree.size(tree)         #=> 5
+      Tree.children(tree, 3)  #=> [4, 5]   # two branches from node 3
+
+  Navigate between siblings to make either branch the live conversation:
+
+      {:ok, tree} = Tree.navigate(tree, 4)   # original branch is live
+      {:ok, tree} = Tree.navigate(tree, 5)   # switch to the new branch
+
+  When `navigate/2` lands on an interior node, `extend/1` walks down to
+  a leaf, following cursors left by previous pushes and navigations:
+
+      {:ok, tree} = Tree.navigate(tree, 2)
+      tree = Tree.extend(tree)               # path extended to a leaf
+
   ## Enumerable
 
   Implements `Enumerable`, yielding tree nodes (maps with `:id`, `:parent_id`,

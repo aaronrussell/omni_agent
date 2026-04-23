@@ -1,69 +1,122 @@
 defmodule Omni.Session do
   @moduledoc """
-  A persistent, branching wrapper around `Omni.Agent`.
+  A Session wraps `Omni.Agent` with identity, persistence, and a
+  branching message tree.
 
-  A Session owns a conversation identity, a branching message tree, a
-  pluggable storage adapter, and a linked `Omni.Agent` process. It
-  forwards the Agent's event stream to its own subscribers and commits
-  turn messages to the tree, persisting through the store.
+  Where an agent holds one in-memory conversation, a session adds the
+  things you need to build a real application around it:
 
-  ## Lifecycle
+  - **Identity** — every session has an id. Grab it, hand it around,
+    reopen the conversation later with `load: id`.
+  - **A branching tree** — regenerate a turn, edit a user message,
+    or switch between alternate replies. The full history stays in
+    the tree; nothing is overwritten.
+  - **Pluggable persistence** — turns commit through an
+    `Omni.Session.Store` adapter. The reference adapter writes to
+    disk; write your own for Postgres, S3, or anywhere else.
 
-  Start a fresh session with an auto-generated id:
+  Sessions otherwise behave like agents — prompt in, stream events out.
+  Agent events are forwarded to Session subscribers re-tagged as
+  `{:session, pid, type, data}`, alongside session-specific events for
+  the tree, title, and store.
 
+  ## Starting and resuming
+
+  Every session has an id. Start a new one with `:new` (or omit for an
+  auto-generated id), or reopen an existing one with `:load`.
+
+      store = {Omni.Session.Store.FileSystem, base_path: "priv/sessions"}
+
+      # Fresh session, auto-generated id
       {:ok, session} = Omni.Session.start_link(
-        agent: [model: {:anthropic, "claude-sonnet-4-5"}],
-        store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions"},
+        agent: [model: {:anthropic, "claude-sonnet-4-6"}],
+        store: store,
         subscribe: true
       )
 
-      :ok = Omni.Session.prompt(session, "Hello!")
+      :ok = Omni.Session.prompt(session, "Name three mountains.")
 
-  Or with an explicit id:
+  Grab the id for later:
 
-      {:ok, session} = Omni.Session.start_link(
-        new: "conversation-42",
-        agent: [...],
-        store: [...]
-      )
+      id = Omni.Session.get_snapshot(session).id
+      Omni.Session.stop(session)
 
-  Load an existing session:
+  Reopen the same session in a new process, after a restart, or days
+  later:
 
       {:ok, session} = Omni.Session.start_link(
-        load: "conversation-42",
-        agent: [model: {:anthropic, "claude-sonnet-4-5"}],
-        store: [...]
+        load: id,
+        agent: [model: {:anthropic, "claude-sonnet-4-6"}],
+        store: store
       )
 
-  Both `:new` and `:load` are optional — omitting both is equivalent to
-  `new: :auto`. Supplying both raises `{:error, :ambiguous_mode}`.
+  Load restores the persisted model, system prompt, opts, title, and
+  full message tree. Tools are supplied fresh each boot — function
+  references aren't safely serialisable. See **Load-mode resolution**
+  below for field-by-field reconciliation between persisted state and
+  start opts.
+
+  Omitting both `:new` and `:load` is equivalent to `new: :auto`.
+  Passing an explicit `new: "my-id"` that collides with an existing
+  persisted session returns `{:error, :already_exists}`. Supplying
+  both `:new` and `:load` raises `{:error, :ambiguous_mode}`.
+
+  ## Branching and navigation
+
+  The message tree lets a session carry multiple children at any node —
+  alternate replies, edits, or scratch branches. Three operations cover
+  the common UX:
+
+      # Regenerate a turn — replay the target user message to get a
+      # fresh assistant reply; the original reply stays as a sibling
+      Omni.Session.branch(session, user_node_id)
+
+      # Edit the next user message — append a new user + turn as a
+      # child of the target assistant
+      Omni.Session.branch(session, assistant_node_id, "Try it this way.")
+
+      # Switch branches — move the active path to expose a different
+      # branch as the live conversation
+      Omni.Session.navigate(session, node_id)
+
+  `branch/3` also accepts `nil` as the target to create a new disjoint
+  root — the atomic equivalent of `navigate(session, nil)` followed by
+  a fresh `prompt/3`. `navigate(session, nil)` on its own clears the
+  active path; the next prompt then creates a new root.
+
+  To explore the tree, use `Omni.Session.get_tree/1` with the
+  `Omni.Session.Tree` helpers: `children/2`, `siblings/2`, `path_to/2`,
+  and `Enumerable` over the active path.
+
+  All three operations are idle-only — they return `{:error, :not_idle}`
+  when a turn is in flight.
 
   ## Start options
 
-    * `:new` — `binary()` or `:auto`. Start a fresh session with the
-      given id, or an auto-generated one. Mutually exclusive with `:load`.
-    * `:load` — `binary()`. Load an existing session by id. Mutually
-      exclusive with `:new`.
-    * `:agent` (required) — `keyword()` or `{module(), keyword()}`.
-      Agent start options; the optional module is a callback module
-      that `use Omni.Agent`.
-    * `:store` (required) — `{module(), keyword()}` — a
-      `Omni.Session.Store` adapter and its config.
-    * `:title` — initial title string. Applied on `:new` only; ignored
-      on `:load` (persisted title wins).
-    * `:subscribe` — if `true`, subscribes the caller to session events
-      as a `:controller` (see `subscribe/1,2` for mode semantics).
-    * `:subscribers` — list of pids (implicit `:controller`) or
-      `{pid, :controller | :observer}` tuples to subscribe at startup.
-    * `:idle_shutdown_after` — `non_neg_integer()` (ms) or `nil`.
-      When a positive integer, the session self-shuts-down when the
-      last controller unsubscribes (or dies) and the agent becomes
-      idle. Unset / `nil` (the default) keeps the session running
-      until explicit stop. Init does not evaluate — shutdown is only
-      evaluated on transitions (a controller leaving, the agent going
-      idle).
-    * `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
-      standard GenServer options.
+  - `:new` — `binary()` or `:auto`. Start a fresh session with the
+    given id, or an auto-generated one. Mutually exclusive with `:load`.
+  - `:load` — `binary()`. Load an existing session by id. Mutually
+    exclusive with `:new`.
+  - `:agent` (required) — `keyword()` or `{module(), keyword()}`.
+    Agent start options; the optional module is a callback module
+    that `use Omni.Agent`.
+  - `:store` (required) — `{module(), keyword()}` — a
+    `Omni.Session.Store` adapter and its config.
+  - `:title` — initial title string. Applied on `:new` only; ignored
+    on `:load` (persisted title wins).
+  - `:subscribe` — if `true`, subscribes the caller to session events
+    as a `:controller` (see `subscribe/1,2` for mode semantics).
+  - `:subscribers` — list of pids (implicit `:controller`) or
+    `{pid, :controller | :observer}` tuples to subscribe at startup.
+  - `:idle_shutdown_after` — `non_neg_integer()` (ms) or `nil`.
+    When a positive integer, the session self-shuts-down when the
+    last controller unsubscribes (or dies) and the agent becomes
+    idle. Unset / `nil` (the default) keeps the session running
+    until explicit stop. Init does not evaluate — shutdown is only
+    evaluated on transitions (a controller leaving, the agent going
+    idle).
+  - `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
+    standard GenServer options.
 
   ### Load-mode resolution
 
@@ -96,17 +149,19 @@ defmodule Omni.Session do
 
   ## Events
 
-  Subscribers receive `{:session, pid, type, data}` messages, where the
-  Agent's events are forwarded verbatim except for the tag change:
+  Subscribers receive `{:session, pid, type, data}` messages. Most
+  events are Agent events forwarded verbatim except for the tag change:
 
       {:agent, agent_pid, type, data}  →  {:session, session_pid, type, data}
 
   This includes streaming deltas, `:message`, `:step`, `:turn`,
-  `:pause`, `:retry`, `:cancelled`, `:error`, `:state`, `:tool_result`.
+  `:pause`, `:retry`, `:cancelled`, `:error`, `:state`, `:status`,
+  `:tool_result`.
 
   Session-specific events:
 
       {:session, pid, :tree,  %{tree: Tree.t(), new_nodes: [node_id()]}}
+      {:session, pid, :title, String.t() | nil}
       {:session, pid, :store, {:saved, :tree | :state}}
       {:session, pid, :store, {:error, :tree | :state, reason}}
 
@@ -123,13 +178,13 @@ defmodule Omni.Session do
 
   Session writes through the store on two triggers:
 
-    * **Turn commits** → `save_tree` with `:new_node_ids`, plus a
-      `:tree` event and a `:store {:saved, :tree}` / `{:error, :tree, _}`
-      event.
-    * **Agent `:state` events** → `save_state` *only* when the
-      persistable subset (`model`, `system`, `opts`, `title`) has
-      changed since last write. Changes to `:tools` or `:private` do
-      not trigger a write.
+  - **Turn commits** → `save_tree` with `:new_node_ids`, plus a
+    `:tree` event and a `:store {:saved, :tree}` / `{:error, :tree, _}`
+    event.
+  - **Agent `:state` events** → `save_state` *only* when the
+    persistable subset (`model`, `system`, `opts`, `title`) has
+    changed since last write. Changes to `:tools` or `:private` do
+    not trigger a write.
 
   All store calls are synchronous; Session **never halts** on store
   errors, only emits `:store {:error, _, _}`. Adapter-specific reasons
@@ -156,6 +211,12 @@ defmodule Omni.Session do
   is configured; observers receive events but never hold the session
   open. Subscriptions are idempotent per pid — re-subscribing with a
   different mode updates the mode in place.
+
+  ## Going further
+
+  For apps managing many concurrent sessions under one supervisor —
+  with registry-backed id lookup and a live feed of session activity —
+  see `Omni.Session.Manager`.
   """
 
   use GenServer
@@ -341,12 +402,12 @@ defmodule Omni.Session do
   @doc """
   Branches from `node_id` with new user content.
 
-    * When `node_id` is an assistant node, the new user + its turn
-      appends as children of the assistant — "edit the next user
-      message."
-    * When `node_id` is `nil`, creates a new disjoint root with the
-      given content — the atomic equivalent of `navigate(session,
-      nil)` followed by `prompt(session, content)`.
+  - When `node_id` is an assistant node, the new user + its turn
+    appends as children of the assistant — "edit the next user
+    message."
+  - When `node_id` is `nil`, creates a new disjoint root with the
+    given content — the atomic equivalent of `navigate(session,
+    nil)` followed by `prompt(session, content)`.
 
   Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
   """

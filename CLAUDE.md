@@ -212,6 +212,15 @@ When adding tests:
   is usually the wrong fix. Check via `get_state` / `get_snapshot`, or
   revisit whether the behaviour is correct.
 
+## Documentation
+
+- All public modules must have a `@moduledoc`. Internal/private modules use `@moduledoc false`.
+- All public types must have a `@typedoc`. Keep it on one line unless complex.
+- All public functions must have a `@doc`. Rely on `@spec` for types — don't repeat in prose.
+- Document options when a function accepts them.
+- Private functions (`defp`) do not need `@doc` annotations.
+- Tone: practical, concise, example-driven. Lead with what you do, not what things are.
+
 ## Where to look
 
 - **Design** — `context/design.md` (the one reference doc).

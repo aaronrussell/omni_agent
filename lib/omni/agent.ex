@@ -1,23 +1,27 @@
 defmodule Omni.Agent do
   @moduledoc """
-  Stateful LLM agents for Elixir. Multi-turn conversations with lifecycle
-  callbacks, tool approval, and steering.
+  **Stateful LLM agents for Elixir** — persistent, branching conversations,
+  tool approval, steering, and multi-session management.
+  Built on [Omni](https://github.com/aaronrussell/omni).
 
-  An agent holds a model, a context (system prompt, messages, tools), and
-  user-defined state. The outside world sends prompts in; the agent streams
-  events back. Between turns, lifecycle callbacks control whether the agent
-  continues, stops, or pauses for human approval.
+  ## The layers
 
-  Use an agent instead of the stateless `generate_text`/`stream_text` API when
-  you need the process to own the conversation — managing context, executing
-  tools with approval gates, and looping autonomously across multiple turns.
+  Each layer is a standalone building block. Pick the one that matches
+  the scope of what you're building — you can stop at any level.
+
+  | Module | What is it |
+  | --- | --- |
+  | `Omni.Session.Manager` | many sessions — supervision, registry, live feed |
+  | `Omni.Session` | persistent conversation — branching, regen, navigation |
+  | `Omni.Agent` | stateful conversation — tools, callbacks, events |
+  | `Omni` | stateless LLM API — stream_text, tools, structs |
 
   ## Quick start
 
   Start an agent without a callback module for simple conversations:
 
       {:ok, agent} = Omni.Agent.start_link(
-        model: {:anthropic, "claude-sonnet-4-5-20250514"},
+        model: {:anthropic, "claude-sonnet-4-6"},
         subscribe: true
       )
       :ok = Omni.Agent.prompt(agent, "Hello!")
@@ -59,7 +63,7 @@ defmodule Omni.Agent do
       end
 
       {:ok, agent} = GreeterAgent.start_link(
-        model: {:anthropic, "claude-sonnet-4-5-20250514"},
+        model: {:anthropic, "claude-sonnet-4-6"},
         private: %{user: "Alice"}
       )
 
@@ -80,27 +84,27 @@ defmodule Omni.Agent do
       end
 
       {:ok, agent} = ResearchAgent.start_link(
-        model: {:anthropic, "claude-sonnet-4-5-20250514"}
+        model: {:anthropic, "claude-sonnet-4-6"}
       )
 
   ## Start options
 
   Options for `start_link/1` and `start_link/2`:
 
-    * `:model` (required) — `{provider_id, model_id}` tuple or `%Model{}`
-    * `:system` — system prompt string
-    * `:messages` — initial `%Message{}` list. Must be empty or end with an
-      `:assistant` message containing no `%ToolUse{}` blocks
-    * `:tools` — list of `%Tool{}` structs
-    * `:private` — initial private map (runtime state visible in callbacks
-      via `state.private`)
-    * `:subscribe` — if `true`, subscribes the caller to agent events
-    * `:subscribers` — list of pids to subscribe to agent events
-    * `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)
-    * `:opts` — inference options passed to `stream_text` each step
-      (`:temperature`, `:max_tokens`, `:max_steps`, etc.)
-    * `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
-      standard GenServer options
+  - `:model` (required) — `{provider_id, model_id}` tuple or `%Model{}`
+  - `:system` — system prompt string
+  - `:messages` — initial `%Message{}` list. Must be empty or end with an
+    `:assistant` message containing no `%ToolUse{}` blocks
+  - `:tools` — list of `%Tool{}` structs
+  - `:private` — initial private map (runtime state visible in callbacks
+    via `state.private`)
+  - `:subscribe` — if `true`, subscribes the caller to agent events
+  - `:subscribers` — list of pids to subscribe to agent events
+  - `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)
+  - `:opts` — inference options passed to `stream_text` each step
+    (`:temperature`, `:max_tokens`, `:max_steps`, etc.)
+  - `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —
+    standard GenServer options
 
   ## Events
 
@@ -219,10 +223,10 @@ defmodule Omni.Agent do
   Calling `prompt/3` while the agent is running or paused stages the content
   for the next turn boundary. When the current step sequence completes:
 
-    * `handle_turn/2` fires as normal (for bookkeeping, state updates)
-    * The staged prompt overrides `handle_turn`'s decision — the agent
-      continues with the staged content regardless of whether the callback
-      returned `{:stop, state}` or `{:continue, ...}`
+  - `handle_turn/2` fires as normal (for bookkeeping, state updates)
+  - The staged prompt overrides `handle_turn`'s decision — the agent
+    continues with the staged content regardless of whether the callback
+    returned `{:stop, state}` or `{:continue, ...}`
 
   This enables steering an autonomous agent mid-run:
 
@@ -290,12 +294,12 @@ defmodule Omni.Agent do
 
   The agent loop has two levels:
 
-    * **Step** — a single LLM request-response cycle. If the model calls tools,
-      the agent handles them and makes another request. Each request is one step.
-    * **Turn** — starts with `prompt/3`, ends with `{:stop, response}`.
-      A turn may contain multiple steps. `handle_turn/2` fires when the model
-      responds without executable tools. If it returns `{:continue, ...}`, the
-      agent keeps working within the same turn.
+  - **Step** — a single LLM request-response cycle. If the model calls tools,
+    the agent handles them and makes another request. Each request is one step.
+  - **Turn** — starts with `prompt/3`, ends with `{:stop, response}`.
+    A turn may contain multiple steps. `handle_turn/2` fires when the model
+    responds without executable tools. If it returns `{:continue, ...}`, the
+    agent keeps working within the same turn.
 
   Each step emits a `:step` event with the per-step response. Turn boundaries
   emit `:turn` events. A turn with continuation looks like this:
@@ -340,6 +344,18 @@ defmodule Omni.Agent do
       def handle_info({:agent, _pid, :error, reason}, socket) do
         {:noreply, put_flash(socket, :error, "Agent error: \#{inspect(reason)}")}
       end
+
+  ## Going further
+
+  `Omni.Session` wraps an agent with conversation identity, a branching
+  message tree, and pluggable persistence. The events documented above
+  are forwarded re-tagged as `{:session, pid, type, data}`, with tree-
+  and store-level events added on top. Sessions support regenerating a
+  turn, editing a user message, and navigating between alternate replies.
+
+  `Omni.Session.Manager` supervises many sessions under a registry, with
+  idle-shutdown and a live feed of session activity — drop-in for apps
+  running multiple concurrent conversations.
   """
 
   alias Omni.Agent.{Snapshot, State}
@@ -372,10 +388,10 @@ defmodule Omni.Agent do
   the model returned text only, or all tool uses were handled during the
   decision phase. Check `response.stop_reason` for why the model stopped:
 
-    * `:stop` — the model finished naturally
-    * `:tool_use` — tool use blocks present but no handlers available
-    * `:length` — output was truncated (hit max output tokens)
-    * `:refusal` — the model declined due to content or safety policy
+  - `:stop` — the model finished naturally
+  - `:tool_use` — tool use blocks present but no handlers available
+  - `:length` — output was truncated (hit max output tokens)
+  - `:refusal` — the model declined due to content or safety policy
 
   Return `{:stop, state}` to end the turn (subscribers receive
   `{:agent, pid, :turn, {:stop, response}}`), or `{:continue, content, state}`
@@ -397,13 +413,13 @@ defmodule Omni.Agent do
   When the model responds with tool use blocks, this callback is invoked
   sequentially for each one before any tools execute. Return values:
 
-    * `{:execute, state}` — queue the tool for execution
-    * `{:reject, reason, state}` — send an error result to the model
-    * `{:result, result, state}` — provide a `%ToolResult{}` directly,
-      skip execution
-    * `{:pause, reason, state}` — pause the agent and send
-      `{:agent, pid, :pause, {reason, tool_use}}` to subscribers;
-      resume later with `resume/2`
+  - `{:execute, state}` — queue the tool for execution
+  - `{:reject, reason, state}` — send an error result to the model
+  - `{:result, result, state}` — provide a `%ToolResult{}` directly,
+    skip execution
+  - `{:pause, reason, state}` — pause the agent and send
+    `{:agent, pid, :pause, {reason, tool_use}}` to subscribers;
+    resume later with `resume/2`
 
   After all decisions are collected, approved tools execute in parallel.
   Rejected and provided results are merged with executed results.
@@ -526,9 +542,9 @@ defmodule Omni.Agent do
 
   Behaviour depends on agent status:
 
-    * **Idle** — starts a new turn immediately.
-    * **Running or paused** — stages the content for the next turn boundary,
-      overriding `handle_turn`'s decision. See "Prompt queuing" in the moduledoc.
+  - **Idle** — starts a new turn immediately.
+  - **Running or paused** — stages the content for the next turn boundary,
+    overriding `handle_turn`'s decision. See "Prompt queuing" in the moduledoc.
   """
   @spec prompt(GenServer.server(), term(), keyword()) :: :ok
   def prompt(agent, content, opts \\ []) do
@@ -542,9 +558,9 @@ defmodule Omni.Agent do
   `{:pause, reason, state}`). The agent continues processing remaining tool
   decisions after resuming.
 
-    * `:execute` — queue the pending tool for execution
-    * `{:reject, reason}` — reject with an error result sent to the model
-    * `{:result, result}` — provide a `%ToolResult{}` directly
+  - `:execute` — queue the pending tool for execution
+  - `{:reject, reason}` — reject with an error result sent to the model
+  - `{:result, result}` — provide a `%ToolResult{}` directly
 
   Returns `{:error, :not_paused}` if the agent is not paused.
   """
@@ -633,14 +649,14 @@ defmodule Omni.Agent do
 
   Accepts the following keys:
 
-    * `:model` — replace the model. Resolved via `Omni.get_model/2`.
-      Fails with `{:error, {:model_not_found, ref}}` if not found
-    * `:system` — replace the system prompt
-    * `:messages` — replace the committed message history. Must be empty or
-      end with an `:assistant` message containing no `%ToolUse{}` blocks;
-      otherwise fails with `{:error, :invalid_messages}`
-    * `:tools` — replace the tool list
-    * `:opts` — replace inference opts
+  - `:model` — replace the model. Resolved via `Omni.get_model/2`.
+    Fails with `{:error, {:model_not_found, ref}}` if not found
+  - `:system` — replace the system prompt
+  - `:messages` — replace the committed message history. Must be empty or
+    end with an `:assistant` message containing no `%ToolUse{}` blocks;
+    otherwise fails with `{:error, :invalid_messages}`
+  - `:tools` — replace the tool list
+  - `:opts` — replace inference opts
 
   All values are replaced, not merged. To merge opts, use the function form
   of `set_state/3`.

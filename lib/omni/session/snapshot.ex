@@ -6,13 +6,13 @@ defmodule Omni.Session.Snapshot do
 
   Fields:
 
-    * `:id` — the session's identifier
-    * `:title` — the session's human-friendly title, or `nil`
-    * `:tree` — the `%Omni.Session.Tree{}` of committed conversation
-      history at the snapshot instant
-    * `:agent` — an `%Omni.Agent.Snapshot{}` capturing the wrapped
-      agent's state, in-flight pending messages, and currently-streaming
-      partial message
+  - `:id` — the session's identifier
+  - `:title` — the session's human-friendly title, or `nil`
+  - `:tree` — the `%Omni.Session.Tree{}` of committed conversation
+    history at the snapshot instant
+  - `:agent` — an `%Omni.Agent.Snapshot{}` capturing the wrapped
+    agent's state, in-flight pending messages, and currently-streaming
+    partial message
 
   To compose the complete view of everything the session knows right
   now:

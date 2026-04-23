@@ -9,25 +9,25 @@ defmodule Omni.Agent.State do
 
   **Configuration** — set at startup, changeable via `set_state/2,3`:
 
-    * `:model` — the `%Model{}` this agent is using
-    * `:system` — system prompt string, or `nil`
-    * `:messages` — committed message history. Only changes at turn boundaries
-      or via `set_state(:messages, ...)`; in-progress turn messages are held
-      internally until the turn completes
-    * `:tools` — list of `%Tool{}` available to the model
-    * `:opts` — agent-level default inference options (keyword list), passed to
-      `stream_text` each step
+  - `:model` — the `%Model{}` this agent is using
+  - `:system` — system prompt string, or `nil`
+  - `:messages` — committed message history. Only changes at turn boundaries
+    or via `set_state(:messages, ...)`; in-progress turn messages are held
+    internally until the turn completes
+  - `:tools` — list of `%Tool{}` available to the model
+  - `:opts` — agent-level default inference options (keyword list), passed to
+    `stream_text` each step
 
-  **Session** — change during operation:
+  **Runtime** — change during operation:
 
-    * `:private` — runtime state (PIDs, ETS refs, closures). Not persisted.
-      Set initial values via the `:private` start option or in `init/1`,
-      update in any callback via `%{state | private: ...}`. Not settable via
-      `set_state/2,3`
-    * `:status` — `:idle`, `:running`, or `:paused`
-    * `:step` — current step counter within the active turn. Resets to `0`
-      when a new turn begins. Useful for step-based policies in callbacks
-      (e.g. rejecting tools after a threshold)
+  - `:private` — runtime state (PIDs, ETS refs, closures). Not persisted.
+    Set initial values via the `:private` start option or in `init/1`,
+    update in any callback via `%{state | private: ...}`. Not settable via
+    `set_state/2,3`
+  - `:status` — `:idle`, `:running`, or `:paused`
+  - `:step` — current step counter within the active turn. Resets to `0`
+    when a new turn begins. Useful for step-based policies in callbacks
+    (e.g. rejecting tools after a threshold)
   """
 
   alias Omni.{Content, Message, Model, Tool}

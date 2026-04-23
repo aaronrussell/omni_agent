@@ -8,10 +8,10 @@ defmodule Omni.Agent.Step do
 
   The step process sends ref-tagged messages back to the parent:
 
-    - `{ref, {:event, type, event_map, partial}}` — streaming events to
-      forward, with the partial `%Response{}` after applying this event
-    - `{ref, {:complete, %Response{}}}` — successful completion
-    - `{ref, {:error, reason}}` — failure
+  - `{ref, {:event, type, event_map, partial}}` — streaming events to
+    forward, with the partial `%Response{}` after applying this event
+  - `{ref, {:complete, %Response{}}}` — successful completion
+  - `{ref, {:error, reason}}` — failure
 
   Uses `Task.start_link/1` so `$callers` is propagated automatically,
   allowing process-ownership registries (Req.Test, Mox) to work.

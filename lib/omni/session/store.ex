@@ -78,12 +78,12 @@ defmodule Omni.Session.Store do
 
   Implement `@behaviour Omni.Session.Store` and the six callbacks:
 
-    * `c:save_tree/4`
-    * `c:save_state/4`
-    * `c:load/3`
-    * `c:list/2`
-    * `c:delete/3`
-    * `c:exists?/2`
+  - `c:save_tree/4`
+  - `c:save_state/4`
+  - `c:load/3`
+  - `c:list/2`
+  - `c:delete/3`
+  - `c:exists?/2`
 
   Configuration arrives as a `keyword()` (the second element of the
   store tuple). Adapters are free to validate or destructure it as
