@@ -1,6 +1,8 @@
 defmodule Omni.Session.Store.FileSystemTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Omni.{Message, Usage}
   alias Omni.Session.Tree
   alias Omni.Session.Store.FileSystem
@@ -429,6 +431,90 @@ defmodule Omni.Session.Store.FileSystemTest do
       :ok = FileSystem.save_tree(cfg(ctx), "here", sample_tree())
       :ok = FileSystem.delete(cfg(ctx), "here")
       refute FileSystem.exists?(cfg(ctx), "here")
+    end
+  end
+
+  describe "durability" do
+    test "load tolerates a torn trailing line in nodes.jsonl", ctx do
+      tree = sample_tree()
+      :ok = FileSystem.save_tree(cfg(ctx), "s1", tree)
+
+      # Simulate a crash mid-append: a fragment with no closing brace and
+      # no trailing newline.
+      nodes_path = Path.join([ctx.tmp_dir, "s1", "nodes.jsonl"])
+      File.write!(nodes_path, ~s({"id":99,"parent_id":1,"mess), [:append])
+
+      log =
+        capture_log(fn ->
+          assert {:ok, loaded, _state} = FileSystem.load(cfg(ctx), "s1")
+          assert loaded == tree
+        end)
+
+      assert log =~ "skipping malformed line"
+      assert log =~ "nodes.jsonl"
+    end
+
+    test "load tolerates a malformed middle line in nodes.jsonl", ctx do
+      tree = sample_tree()
+      :ok = FileSystem.save_tree(cfg(ctx), "s1", tree)
+
+      # Simulate torn-then-successful-append: the bad line is now in the
+      # middle of the file. The uniform-skip rule recovers both valid
+      # entries.
+      nodes_path = Path.join([ctx.tmp_dir, "s1", "nodes.jsonl"])
+      original = File.read!(nodes_path)
+      [line1, line2 | _] = String.split(original, "\n", trim: true)
+      torn = ~s({"id":99,"parent_id":1,"mess)
+      File.write!(nodes_path, [line1, "\n", torn, "\n", line2, "\n"])
+
+      log =
+        capture_log(fn ->
+          assert {:ok, loaded, _state} = FileSystem.load(cfg(ctx), "s1")
+          assert map_size(loaded.nodes) == 2
+        end)
+
+      assert log =~ "skipping malformed line"
+    end
+
+    @tag :capture_log
+    test "load returns :not_found when session.json is truncated", ctx do
+      :ok = FileSystem.save_tree(cfg(ctx), "s1", sample_tree())
+
+      # Simulate a crash between File.write's truncate and flush.
+      session_path = Path.join([ctx.tmp_dir, "s1", "session.json"])
+      File.write!(session_path, "")
+
+      assert {:error, :not_found} = FileSystem.load(cfg(ctx), "s1")
+    end
+
+    test "atomic write overwrites a stale .tmp from a previous crashed write", ctx do
+      :ok = FileSystem.save_state(cfg(ctx), "s1", %{title: "first"})
+
+      # Simulate a crash between tmp-write and rename: a stale .tmp is
+      # left next to session.json. The next save must succeed and not
+      # leave the stale content behind.
+      session_path = Path.join([ctx.tmp_dir, "s1", "session.json"])
+      tmp_path = session_path <> ".tmp"
+      File.write!(tmp_path, "{broken junk")
+      original = File.read!(session_path)
+
+      # Live file is still intact before the next save.
+      assert original != ""
+      assert {:ok, _tree, %{title: "first"}} = FileSystem.load(cfg(ctx), "s1")
+
+      :ok = FileSystem.save_state(cfg(ctx), "s1", %{title: "second"})
+
+      {:ok, _tree, state} = FileSystem.load(cfg(ctx), "s1")
+      assert state == %{title: "second"}
+      refute File.exists?(tmp_path)
+    end
+
+    test "two sequential save_state calls both land", ctx do
+      :ok = FileSystem.save_state(cfg(ctx), "s1", %{title: "T"})
+      :ok = FileSystem.save_state(cfg(ctx), "s1", %{system: "S"})
+
+      {:ok, _tree, state} = FileSystem.load(cfg(ctx), "s1")
+      assert state == %{title: "T", system: "S"}
     end
   end
 end

@@ -38,6 +38,8 @@ defmodule Omni.Session.Store.FileSystem do
 
   @behaviour Omni.Session.Store
 
+  require Logger
+
   alias Omni.Codec
   alias Omni.Session.Tree
 
@@ -157,20 +159,51 @@ defmodule Omni.Session.Store.FileSystem do
       |> Enum.map(&Map.fetch!(nodes, &1))
       |> Enum.map(&(encode_node(&1) <> "\n"))
 
-    File.write(nodes_path(dir), lines, [:append])
+    File.write(nodes_path(dir), lines, [:append, :sync])
   end
 
+  # nodes.jsonl is an append-only log. A malformed line (typically a torn
+  # trailing write after a crash) is treated as a failed append — skip it,
+  # log, and move on. Applied uniformly to any position: a single torn
+  # write followed by a successful append would otherwise permanently
+  # brick the session.
   defp read_nodes(dir) do
     path = nodes_path(dir)
 
     if File.exists?(path) do
       path
       |> File.stream!()
-      |> Enum.map(&decode_node/1)
+      |> Enum.flat_map(&decode_node_safe(&1, path))
     else
       []
     end
   end
+
+  defp decode_node_safe(line, path) do
+    with {:ok, %{} = map} <- JSON.decode(line),
+         {:ok, message} <- Codec.decode(map["message"]),
+         {:ok, usage} <- decode_node_usage(map["usage"]) do
+      [
+        %{
+          id: map["id"],
+          parent_id: map["parent_id"],
+          message: message,
+          usage: usage
+        }
+      ]
+    else
+      {:ok, decoded} ->
+        Logger.warning("skipping malformed line in #{path}: #{inspect(decoded)}")
+        []
+
+      {:error, reason} ->
+        Logger.warning("skipping malformed line in #{path}: #{inspect(reason)}")
+        []
+    end
+  end
+
+  defp decode_node_usage(nil), do: {:ok, nil}
+  defp decode_node_usage(encoded), do: Codec.decode(encoded)
 
   defp encode_node(node) do
     JSON.encode!(%{
@@ -179,28 +212,6 @@ defmodule Omni.Session.Store.FileSystem do
       "message" => Codec.encode(node.message),
       "usage" => if(node.usage, do: Codec.encode(node.usage), else: nil)
     })
-  end
-
-  defp decode_node(line) do
-    map = JSON.decode!(line)
-    {:ok, message} = Codec.decode(map["message"])
-
-    usage =
-      case map["usage"] do
-        nil ->
-          nil
-
-        encoded ->
-          {:ok, u} = Codec.decode(encoded)
-          u
-      end
-
-    %{
-      id: map["id"],
-      parent_id: map["parent_id"],
-      message: message,
-      usage: usage
-    }
   end
 
   # ── session.json ───────────────────────────────────────────────────
@@ -220,7 +231,24 @@ defmodule Omni.Session.Store.FileSystem do
       |> Map.merge(updates)
       |> Map.put("updated_at", now_iso)
 
-    File.write(path, JSON.encode!(merged))
+    atomic_write(path, JSON.encode!(merged))
+  end
+
+  # POSIX atomic replace: fsync a sibling tmp file, then rename over the
+  # target. Rename is atomic within a filesystem, so a crash leaves either
+  # the old file untouched or the new file fully on disk — never a truncated
+  # or empty file.
+  defp atomic_write(path, data) do
+    tmp = path <> ".tmp"
+
+    with :ok <- File.write(tmp, data, [:sync]),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(tmp)
+        {:error, reason}
+    end
   end
 
   defp read_session_json(path) do
