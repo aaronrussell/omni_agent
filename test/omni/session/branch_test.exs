@@ -187,6 +187,75 @@ defmodule Omni.Session.BranchTest do
     end
   end
 
+  describe "cancelled edit (branch/3 with assistant target + content)" do
+    test "tree path remains on the assistant; no children appear", ctx do
+      {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
+
+      # First turn seeds user:1 → assistant:2.
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+
+      # Gate the branch's LLM call so we can cancel while it's in-flight.
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        send(parent, {:llm_called, gate_ref, self()})
+
+        receive do
+          {:release, ^gate_ref} -> :ok
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
+
+      :ok = Session.branch(session, 2, "B")
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
+      :ok = Session.cancel(session)
+      send(plug_pid, {:release, gate_ref})
+      _ = collect_session_events(session)
+
+      tree = Session.get_tree(session)
+      # Per session-design.md: on cancel, no tree mutation beyond the
+      # path change that `branch/3` did before prompting.
+      assert tree.path == [1, 2]
+      assert Tree.children(tree, 2) == []
+      assert Tree.size(tree) == 2
+      # regen_source is a branch/2 (regen) concept; it must never be set
+      # for branch/3 (edit), cancelled or otherwise.
+      assert :sys.get_state(session).regen_source == nil
+    end
+  end
+
+  describe "errored edit (branch/3 with assistant target + content)" do
+    test "tree path remains on the assistant; no children appear", ctx do
+      {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
+
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+
+      # Next call 500s — the default handle_error returns {:stop, state}.
+      Req.Test.stub(stub_name, fn conn ->
+        Plug.Conn.send_resp(conn, 500, "Internal Server Error")
+      end)
+
+      :ok = Session.branch(session, 2, "B")
+      events = collect_session_events(session)
+
+      assert Enum.any?(events, &match?({:error, _}, &1))
+
+      tree = Session.get_tree(session)
+      assert tree.path == [1, 2]
+      assert Tree.children(tree, 2) == []
+      assert Tree.size(tree) == 2
+      assert :sys.get_state(session).regen_source == nil
+    end
+  end
+
   describe "cancelled regen" do
     test "cancelling a regen clears regen_source", ctx do
       {session, _} =

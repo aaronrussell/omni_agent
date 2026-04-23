@@ -169,5 +169,21 @@ defmodule Omni.Session.PersistenceTest do
       assert {:store, {:error, :tree, :disk_full}} in events
       assert Process.alive?(session)
     end
+
+    test ":store {:error, :state, reason} event fires, session continues", ctx do
+      failing_store = {
+        Omni.Session.Store.Failing,
+        fail_save_state: :disk_full, delegate: tmp_store(ctx)
+      }
+
+      {session, _} = start_session(ctx, new: "s1", store: failing_store)
+
+      # set_title flows through persist_state_if_changed — the title is
+      # part of the persistable subset, so this triggers a save_state.
+      :ok = Session.set_title(session, "A new title")
+
+      assert_receive {:session, ^session, :store, {:error, :state, :disk_full}}, 2000
+      assert Process.alive?(session)
+    end
   end
 end
