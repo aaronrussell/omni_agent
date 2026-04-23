@@ -31,12 +31,12 @@ tested, and a suggested approach. Pick any and run with it.
 
 ### Multi-segment `:continue` inside a regen
 **File:** new test in `test/omni/session/branch_test.exs`.
-**Invariant:** `session-design.md` — the "drop duplicate leading user" rule applies *only* to the first segment of a regen; `regen_source` is cleared after the first commit. Subsequent continuation segments push normally from the head of the active path.
+**Invariant:** `context/design.md` § 5.7 (Regen mechanics) — the "drop duplicate leading user" rule applies *only* to the first segment of a regen; `regen_source` is cleared after the first commit. Subsequent continuation segments push normally from the head of the active path.
 **Approach:** `ContinueAgent` (in `test/support/test_agents.ex`) + `branch/2` (regen) with fixtures that produce two segments. First segment: tree drops the duplicate leading user. Second segment's `:turn {:continue, _}`: assert children append normally under the new assistant, and `:sys.get_state(session).regen_source == nil` before the second segment commits.
 
 ### Tracker hand-off ordering (observable)
 **File:** new test in `test/omni/session/manager_tracker_test.exs`.
-**Invariant:** `manager-design.md:730` — `Manager.create/2` and `Manager.open/3` synchronously hand off to `Tracker.add/3` before returning. `list_running/1` called immediately after `create/2` must include the new entry; a subscriber that subscribes *before* `create/2` must see `:session_added`.
+**Invariant:** `context/design.md` § 7.5 (Tracker hand-off) — `Manager.create/2` and `Manager.open/3` synchronously hand off to `Tracker.add/3` before returning. `list_running/1` called immediately after `create/2` must include the new entry; a subscriber that subscribes *before* `create/2` must see `:session_added`.
 **Approach:** Two tests. (1) `Manager.create(...)` → immediately call `list_running(m)` and assert the new id is present (no `eventually`). (2) `subscribe` → `create` → `assert_receive :session_added` with a small timeout. The existing `list_running` tests use `eventually`, which masks a broken hand-off.
 
 ---

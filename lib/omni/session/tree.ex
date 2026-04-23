@@ -11,10 +11,13 @@ defmodule Omni.Session.Tree do
   An **active path** acts as a cursor through the tree — `push/3` always appends
   to the head of this path, and `navigate/2` moves it to a different branch.
 
-  Both `push/3` and `navigate/2` record a **cursor** for the parent node, tracking
-  which child was most recently selected. `extend/1` follows these cursors to walk
-  from the current head to a leaf, reconstructing a full path after navigating to
-  a mid-tree branch point.
+  Both `push/3` and `navigate/2` record **cursors** that track which child was
+  most recently selected at a given parent. `push/3` sets a single cursor at the
+  new node's immediate parent. `navigate/2` sets cursors for every parent-child
+  pair along the path from root to the target, so the branch that was just
+  navigated to is fully pinned. `extend/1` follows these cursors to walk from
+  the current head to a leaf, reconstructing a full path after navigating to a
+  mid-tree branch point.
 
   ## Enumerable
 
@@ -140,8 +143,10 @@ defmodule Omni.Session.Tree do
   @doc """
   Sets the active path by walking parent pointers from `node_id` back to root.
 
-  Also sets the cursor for the parent node to point at `node_id`, so that
-  `extend/1` will follow this branch by default.
+  Sets cursors for every parent-child pair along the navigated path, so
+  `extend/1` from any ancestor reproduces this branch. This makes navigation
+  fully pin the selected branch, overriding any cursors left by earlier pushes
+  or navigations.
 
   Passing `nil` clears the active path without touching the node set or
   cursors. A subsequent `push/3` will create a new root (parent `nil`),
@@ -152,11 +157,16 @@ defmodule Omni.Session.Tree do
   @spec navigate(t(), node_id() | nil) :: {:ok, t()} | {:error, :not_found}
   def navigate(%__MODULE__{} = tree, nil), do: {:ok, %{tree | path: []}}
 
-  def navigate(%__MODULE__{nodes: nodes, cursors: cursors} = tree, node_id) do
+  def navigate(%__MODULE__{nodes: nodes} = tree, node_id) do
     case walk_to_root(nodes, node_id) do
       {:ok, path} ->
-        parent_id = nodes[node_id].parent_id
-        cursors = if parent_id, do: Map.put(cursors, parent_id, node_id), else: cursors
+        cursors =
+          path
+          |> Enum.chunk_every(2, 1, :discard)
+          |> Enum.reduce(tree.cursors, fn [parent, child], acc ->
+            Map.put(acc, parent, child)
+          end)
+
         {:ok, %{tree | path: path, cursors: cursors}}
 
       {:error, :not_found} ->

@@ -563,6 +563,22 @@ defmodule Omni.Session.TreeTest do
       # No cursor set for nil parent
       refute Map.has_key?(tree.cursors, nil)
     end
+
+    test "navigate sets cursors along the full path from root to target" do
+      # example_tree() ends with navigate(tree, 8), so node 4's cursor should
+      # point at 7 — the branch we navigated into — even though a later push
+      # under node 4 (creating node 9) had moved cursor[4] to 9.
+      tree = example_tree()
+
+      assert tree.cursors[4] == 7
+      assert tree.cursors[7] == 8
+
+      # navigate(tree, 1) + extend should reproduce the branch we just
+      # navigated to, not the sibling (9) that was most recently pushed.
+      {:ok, tree} = Tree.navigate(tree, 1)
+      tree = Tree.extend(tree)
+      assert tree.path == [1, 2, 3, 4, 7, 8]
+    end
   end
 
   describe "extend/1" do

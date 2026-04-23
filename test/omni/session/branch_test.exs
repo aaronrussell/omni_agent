@@ -220,8 +220,8 @@ defmodule Omni.Session.BranchTest do
       _ = collect_session_events(session)
 
       tree = Session.get_tree(session)
-      # Per session-design.md: on cancel, no tree mutation beyond the
-      # path change that `branch/3` did before prompting.
+      # Per context/design.md § 5.7: on cancel, no tree mutation beyond
+      # the path change that `branch/3` did before prompting.
       assert tree.path == [1, 2]
       assert Tree.children(tree, 2) == []
       assert Tree.size(tree) == 2

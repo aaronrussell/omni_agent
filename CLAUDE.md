@@ -1,135 +1,222 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in `omni_agent`. Architecture details
+live in `context/design.md` — this file covers what to know as a
+developer on this codebase and the conventions to follow.
 
-## Project Overview
+## What this package is
 
-Omni Agent is an Elixir package that provides a GenServer-based building block for stateful, long-running LLM interactions. It builds on top of the [`omni`](https://github.com/aaronrussell/omni) package, wrapping its stateless `stream_text`/`generate_text` API in a supervised process that manages conversation context, executes tools, and communicates with callers via process messages.
+`omni_agent` is an Elixir package of OTP building blocks for stateful,
+long-running LLM interactions. It layers on top of
+[`omni`](https://github.com/aaronrussell/omni), the stateless LLM API
+library:
 
-The package is separated from `omni` because the stateless LLM API layer (omni) is stable, while the agent layer is under active experimentation and rapid iteration.
+```
+Omni.Session.Manager   — supervises many sessions (optional)
+      │
+Omni.Session           — conversation lifetime: tree, persistence,
+                         navigation
+      │
+Omni.Agent             — turn engine: model, context, tools, events
+      │
+Omni (stateless)       — stream_text / Tool.Runner / structs
+```
 
-### Core idea
+Each layer depends only on the one below and uses only the lower
+layer's public API. Each layer can be used standalone.
 
-An agent is a process that holds a model, a context (system prompt, messages, tools), and user-defined state. The outside world sends prompts in; the agent works on them (potentially across multiple LLM steps) and sends events back. Users control behaviour through lifecycle callbacks.
+- **Agent** owns the **turn** — ephemeral, no identity, no persistence.
+- **Session** owns the **conversation** — id, branching tree, store
+  adapter, linked Agent.
+- **Manager** owns **multi-session lifecycle** — Registry,
+  DynamicSupervisor, Tracker, and cross-session pub/sub.
 
-The agent owns the **turn** (a complete prompt-to-stop cycle), while the **application** owns the session (persistence, branching, navigation, cumulative usage tracking). During a turn, messages accumulate internally as `turn_messages`. On success (`{:stop, response}`), they're committed to `state.messages`. On cancel or error, they're discarded — the committed state always stays valid.
+For the full design reference (state shapes, events, callbacks,
+persistence triggers, navigation mechanics, supervision strategy), read
+`context/design.md`.
 
-### What lives here vs in `omni`
-
-| This package (`omni_agent`) | Parent package (`omni`) |
-|---|---|
-| `Omni.Agent` — behaviour, `use` macro, public API | `Omni.stream_text/3`, `Omni.generate_text/3` |
-| `Omni.Agent.Server` — GenServer internals | `Omni.Context`, `Omni.Message`, `Omni.Response` |
-| `Omni.Agent.State` — public state struct | `Omni.Tool`, `Omni.Tool.Runner` |
-| `Omni.Agent.Step` — LLM request task | `Omni.Model`, `Omni.Usage` |
-| `Omni.Agent.Executor` — tool execution task | `Omni.Content.*` content blocks |
-| | Providers, dialects, streaming pipeline |
-
-The dependency is strictly one-directional — `omni_agent` depends on `omni`, never the reverse. The sole integration point for LLM requests is `Omni.stream_text/3` (called in `Step`). Tool execution uses `Omni.Tool.Runner.run/3` (called in `Executor`).
-
-See the [Context Document](#context-document) for the full design reference.
-
-## Build & Development Commands
+## Build & test commands
 
 ```bash
-mix compile                   # Compile the project
-mix test                      # Run all tests
-mix test path/to/test.exs     # Run a single test file
-mix test path/to/test.exs:42  # Run a specific test (line number)
-mix format                    # Format all code
-mix format --check-formatted  # Check formatting without changing files
+mix compile                    # Compile
+mix test                       # Run all tests
+mix test path/to/test.exs      # Single file
+mix test path/to/test.exs:42   # Single test by line
+mix format                     # Format
+mix format --check-formatted   # CI formatting check
 ```
 
 ## Dependencies
 
-- **Omni** — the parent LLM API package (local path dep during development, hex dep for release)
-- **Plug** (test only) — required for `Req.Test` plug-based mocking
+- **`omni`** — the stateless LLM API package. Local path dep during
+  development, hex dep for release.
+- **`plug`** (test only) — for `Req.Test` plug-based stubbing.
 
-All other transitive dependencies (Req, Peri, etc.) come through `omni`.
+All other transitive deps (Req, Peri, Jason, etc.) come through `omni`.
 
-## Architecture
-
-### Process model
-
-The agent GenServer never blocks on IO. All blocking work is delegated to spawned Tasks:
-
-- **Step Task** (`Omni.Agent.Step`) — one per LLM request. Calls `Omni.stream_text` with `max_steps: 1`, enumerates the `StreamingResponse`, and forwards events to the GenServer via a tagged ref. The GenServer remains responsive for cancel/resume/inspect at all times.
-- **Executor Task** (`Omni.Agent.Executor`) — one per tool execution batch. Calls `Omni.Tool.Runner.run/3` in a linked Task and sends results back.
-- **Tool Tasks** — spawned by `Tool.Runner` internally, one per tool, executed in parallel.
-
-### State split
-
-Agent state is split into two structs:
-
-- **`Omni.Agent.State`** — the public struct passed to all callbacks. Contains `model`, `system`, `messages`, `tools`, `opts`, `private`, `status`, `step`.
-- **`Omni.Agent.Server`** (internal) — wraps `State` and adds GenServer machinery: task refs, turn messages/usage, tool decision state, staged prompts. Never exposed to callbacks.
-
-### State and turn messages
-
-Messages live directly on `state.messages`. The agent rebuilds a `%Context{system, messages, tools}` on each call to `Omni.stream_text/3` internally. During a turn, new messages (user prompt, assistant responses, tool results) accumulate in `turn_messages` (internal server state). LLM requests see `state.messages ++ turn_messages`. On every `:turn` event (both `{:stop, _}` and `{:continue, _}`), `turn_messages` commits to `state.messages`. On cancel or error, it's discarded.
-
-This design means `state.messages` is always in a valid state — no trailing user messages after cancel/error. The application can use `set_state/2,3` to update fields (swap messages for navigation, hydrate a session, etc.) when the agent is idle. `set_state(:messages, ...)` validates the list ends with an `:assistant` message containing no `ToolUse` blocks (or is empty).
-
-### Agent loop
-
-The agent loop operates at two levels:
-
-- **Step** — a single LLM request-response. If the model calls tools, the agent handles them and makes another request.
-- **Turn** — starts with `prompt/3`, ends with `{:stop, response}`. `handle_turn` fires when the model responds without executable tools. If it returns `{:continue, ...}`, the agent keeps working within the same turn.
-
-A single `evaluate_head/1` function drives the state machine: last turn message is a user message → spawn step, assistant with tool uses → tool decision phase, assistant without → `handle_turn`.
-
-The agent does **not** use `Omni.Loop` for tool execution — it calls `stream_text` with `max_steps: 1` so Loop never enters its tool loop. The agent manages tools itself via `handle_tool_use`/`handle_tool_result` callbacks, enabling per-tool approval gates and pause/resume.
-
-### Tool decision flow
-
-When the model produces tool use blocks, all tool uses flow through `handle_tool_use/2`:
-
-1. **Decision phase**: `handle_tool_use` called sequentially for each tool use — returns `{:execute, state}`, `{:reject, reason, state}`, `{:result, result, state}`, or `{:pause, reason, state}`
-2. **Execution check**: if any approved tool lacks a handler → `handle_turn` with `stop_reason: :tool_use`
-3. **Execution phase**: approved tools run in parallel via `Tool.Runner.run/3`, results (executed + rejected + provided) passed to `handle_tool_result`
-
-## Module Layout
+## Module layout
 
 ```
 lib/omni/
-├── agent.ex                    # Public module: behaviour, use macro, callback defaults, API
-├── agent/
-│   ├── state.ex                # Public state struct passed to callbacks
-│   ├── server.ex               # Internal GenServer (@moduledoc false)
-│   ├── step.ex                 # Step process: streams LLM request (@moduledoc false)
-│   └── executor.ex             # Executor process: parallel tool execution (@moduledoc false)
+├── agent.ex                       # public: behaviour, use macro, API
+├── agent/{state,snapshot}.ex      # public structs
+├── agent/{server,step,executor}.ex # internal (@moduledoc false)
+├── session.ex                     # public: Session GenServer + API
+├── session/{snapshot,tree}.ex     # public
+├── session/store.ex               # adapter behaviour + dispatch
+├── session/store/file_system.ex   # reference adapter
+├── session/manager.ex             # Supervisor + use macro + API
+└── session/manager/tracker.ex     # internal (@moduledoc false)
 ```
 
 ## Conventions
 
-- The term is "tool use", not "tool call" (aligns with Anthropic's API, consistent with `omni`).
-- Agent statuses: `:idle`, `:running`, `:paused`. Status determines which API calls are valid.
-- All callbacks are optional with `defoverridable` defaults. Users implement only what they need.
-- `set_state/2` (keyword list, replaces by key, atomic) and `set_state/3` (single field + value or function). Settable fields: `:model`, `:system`, `:messages`, `:tools`, `:opts`. `:private` is not settable — callback modules own mutation.
-- `:step` events carry the per-step `%Response{}` from each LLM request. `response.messages` is always `[user, assistant]` — the user message that prompted the step (initial prompt, continuation prompt, or tool-result user) paired with the assistant response. `:stop`, `:continue`, and `:cancelled` events carry a `%Response{}` with `messages` — all messages from the turn. `:error` carries the bare error reason term.
-- The agent has no `session_id` or built-in persistence — session identity and storage are application concerns. The `{:stop, response}` event carries enough context (`messages`, `usage`) for external listeners to persist.
-- `prompt/3` behaviour depends on status: idle → start turn, running/paused → stage for next turn boundary (steering).
-- On error (after `handle_error/2` returns `{:stop, state}`), `turn_messages` is discarded and the agent goes to `:idle`. The app can prompt again immediately.
+### Terminology
+
+- **Tool use**, not "tool call" (aligns with Anthropic and `omni`).
+- **Turn** = one prompt-to-stop cycle. **Segment** = one natural stop
+  within a turn (at `:turn {:continue, _}` or `:turn {:stop, _}`).
+  **Step** = one LLM request-response.
+- Agent statuses: `:idle`, `:running`, `:paused`. Status determines
+  which API calls are valid. Navigation and branching on Session are
+  **idle-only**; `prompt/3` is not.
+
+### State invariants
+
+- `state.messages` on an idle Agent is empty **or** ends with an
+  `:assistant` message containing no `%ToolUse{}` blocks. This is
+  enforced at `set_state(:messages, _)` and on the state returned from
+  `init/1`.
+- `state.private` is not settable via `set_state` — callbacks mutate
+  it via `%{state | private: _}`.
+- Settable fields on Agent: `:model | :system | :messages | :tools |
+  :opts`. All values **replace** — no merge semantics at the API
+  boundary (use the function form of `set_state/3` to transform).
+- Session's `set_agent/2,3` delegates straight to `Agent.set_state`.
+
+### Events
+
+- Event format: `{:agent, pid, type, payload}` (Agent),
+  `{:session, pid, type, payload}` (Session — re-tags Agent events
+  verbatim), or `{:manager, module, type, payload}` (Manager —
+  **module atom**, not Tracker pid).
+- `:step.response.messages` is always `[user, assistant]` — exactly
+  two messages. The user is whatever prompted the step (initial
+  prompt, continuation, or tool-result user).
+- `:turn.response.messages` is segment-scoped — only the messages
+  committed in that segment, and `response.usage` is segment-scoped
+  too (turn_usage resets per segment to avoid double-counting in the
+  persisted tree).
+- `:status` precedes every event derived from a status transition
+  (e.g. `:status :idle` before `:turn {:stop, _}`). Idempotent
+  transitions don't emit.
+- `:state` fires only on `set_state/2,3` mutations, **not** on
+  turn-boundary commits. Consumers distinguishing mutation from
+  progress rely on this separation — Session's persistence path is
+  one of them.
+
+### Persistence triggers
+
+Two categories with different trigger rules:
+
+- **Tree** (`save_tree`) is Session-driven — every turn commit,
+  navigation, or branch initiation calls it.
+- **State map** (`save_state` — `model`, `system`, `opts`, `title`)
+  is change-detected. Session diffs the persistable subset against
+  `last_persisted_state` on every Agent `:state` event and every
+  `set_title/2` call; unchanged → no write. `opts` is canonicalised
+  (sorted keyword) to avoid spurious saves on reordered-but-equivalent
+  inputs.
+
+Store calls are synchronous and always go through Session's mailbox
+— no concurrent-write race for a given session. Store errors never
+halt Session; they only emit `:store {:error, _, _}`.
+
+### Public vs internal
+
+- Public modules have `@moduledoc` + `@typedoc` / `@doc` / `@spec` on
+  all public surfaces.
+- Internal modules (`Agent.Server`, `Agent.Step`, `Agent.Executor`,
+  `Manager.Tracker`) are `@moduledoc false`.
+- Doc tone: practical over theoretical, concise, example-driven for
+  key APIs. Lead with what you do, not what things are. Rely on
+  `@spec` for types — don't repeat type info in prose.
+- Private functions don't need `@doc`.
+
+## Development do's and don'ts
+
+### Do
+
+- **Use the public API from each layer.** Session uses only Agent's
+  public API; Manager uses only Session's. No downward reaching.
+- **Prefer editing existing files.** The module layout is settled.
+- **Run the affected test file (or the whole suite) before claiming
+  done.** Tests run with no network — no reason to skip.
+- **Keep changes scoped to the layer.** If a refactor seems to need a
+  change to Agent for something Manager wants, ask first — we worked
+  hard to keep layering one-directional.
+- **Match existing error shapes.** `{:error, :not_idle}`, `{:error,
+  :invalid_messages}`, `{:error, :already_exists}`, `{:error,
+  {:invalid_opt, key}}`, etc. — don't invent new shapes without a
+  reason.
+
+### Don't
+
+- **Don't add features beyond what the task requires.** No speculative
+  abstractions, hypothetical future-proofing, or "while I'm in here"
+  refactors. Three similar lines beats a premature helper.
+- **Don't fall back silently when a field is load-ambiguous.** The
+  load-mode resolution rules in `context/design.md § 5.4` are
+  deliberate — follow them, don't add new fallbacks.
+- **Don't persist tools or private state.** Tools hold function
+  refs; `private` is callback-module runtime state. Both are
+  explicitly out of the persistable subset.
+- **Don't write `@doc` for edge cases that aren't public API.** The
+  tree's auto-ID scheme, the regen `drop-leading-user` dance, and
+  similar mechanics live in code comments and in `context/design.md`
+  — not in `@doc`.
+- **Don't emit `:state` for turn commits or `:status` for idempotent
+  transitions.** Session and Tracker rely on these contracts.
+- **Don't bypass the DynamicSupervisor under Manager.** Sessions live
+  under it by design so they outlive their callers.
 
 ## Testing
 
-Tests live in `test/omni/agent/` and use `Req.Test.stub/2` with a plug to simulate HTTP responses. Tests exercise the full agent lifecycle through the public `Omni.Agent` API: prompt/response, tool execution, pause/resume, cancel, error handling, continuation, steering, set_state, and more. A shared `Omni.Agent.AgentCase` (`test/support/agent_case.ex`) provides helpers for stubbing fixtures, starting agents, and collecting events.
+Tests live under `test/omni/agent/**` and `test/omni/session/**`. They
+exercise the full lifecycle through the public API — no test reaches
+into internal state.
 
-**Fixtures:** SSE fixtures in `test/support/fixtures/sse/` are real Anthropic API recordings copied from the `omni` package. Three fixtures: `anthropic_text.sse` (text response), `anthropic_tool_use.sse` (tool use response), and `anthropic_thinking.sse` (thinking response). Tests compose these via `stub_fixture` (single response) and `stub_sequence` (ordered responses for multi-step scenarios).
+- **Fixtures** in `test/support/fixtures/sse/` are real Anthropic API
+  recordings from the `omni` package. Three files:
+  `anthropic_text.sse`, `anthropic_tool_use.sse`,
+  `anthropic_thinking.sse`.
+- **Helpers** in `test/support/`:
+  - `agent_case.ex` — `stub_fixture` (single response), `stub_sequence`
+    (ordered multi-step), `stub_error`, event collection.
+  - `session_case.ex` — same shape, adapted for sessions.
+  - `test_agents.ex` — canned callback modules covering every callback
+    path (init, handle_turn, handle_tool_use, handle_tool_result,
+    handle_error, terminate).
+  - `failing_store.ex` — store adapter that errors on demand.
+- **Test env** — `test/support/` is compiled via `elixirc_paths(:test)`.
+  No API keys required.
 
-No tests require API keys. `test/support/` is compiled in the test environment via `elixirc_paths`.
+When adding tests:
 
-## Documentation
+- Prefer to exercise behaviour through `prompt` / `subscribe` /
+  `resume` and assert on emitted events. Don't reach into the server
+  struct.
+- Avoid sleeps for synchronisation — use `assert_receive` on the
+  event you are actually waiting for.
+- If a behaviour isn't observable through events, adding a new event
+  is usually the wrong fix. Check via `get_state` / `get_snapshot`, or
+  revisit whether the behaviour is correct.
 
-- All public modules must have a `@moduledoc`. Internal/private modules use `@moduledoc false`.
-- All public types must have a `@typedoc`. Keep it on one line unless the type is complex enough to warrant further explanation.
-- All public functions must have a `@doc`. One sentence is fine if the function is self-explanatory; add more detail for complex behaviour. Rely on `@spec` for types — don't repeat type info in prose.
-- Private functions (`defp`) do not need `@doc` annotations.
-- Tone: practical over theoretical, concise, example-driven for key APIs. Lead with what you do, not what things are.
+## Where to look
 
-## Context Document
-
-The `context/` directory contains detailed design and planning documents. This CLAUDE.md provides sufficient context for most tasks — consult the design doc when working in depth on the agent internals.
-
-- **`context/design.md`** — Full architecture reference covering: relationship to `omni`, public API (`prompt`, `set_state`), lifecycle callbacks (`init`, `handle_tool_use`, `handle_tool_result`, `handle_turn`, `handle_error`, `terminate`), process model (Step/Executor/Tool Tasks), pause/resume, prompt queuing/steering, context and pending messages model, the completion tool pattern, and the evaluate_head state machine.
+- **Design** — `context/design.md` (the one reference doc).
+- **Roadmap** — `context/roadmap.md` (parked ideas requiring exploration; no scheduled work).
+- **Test review follow-ups** — `context/test-review-followups.md`
+  (items worth revisiting in tests, not blockers).
+- **Feedback / help** — `/help` or
+  https://github.com/anthropics/claude-code/issues.
