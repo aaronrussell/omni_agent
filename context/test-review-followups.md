@@ -29,10 +29,10 @@ tested, and a suggested approach. Pick any and run with it.
 **Invariant:** `session.ex:901-911` passes `[new_node_ids: [...]]` to the store; the FileSystem adapter relies on this to choose append vs. full-rewrite. A regression that dropped the keyword or passed the wrong shape would break any adapter other than a stub.
 **Approach:** A spy/capture store adapter (could extend `Failing` or add a new `Capturing` store under `test/support/`) that records `save_tree`'s `opts` argument. Run one prompt, assert `opts[:new_node_ids]` is `[user_id, assistant_id]` (in push order).
 
-### Multi-segment `:continue` inside a regen
+### Continuation inside a regen
 **File:** new test in `test/omni/session/branch_test.exs`.
-**Invariant:** `context/design.md` § 5.7 (Regen mechanics) — the "drop duplicate leading user" rule applies *only* to the first segment of a regen; `regen_source` is cleared after the first commit. Subsequent continuation segments push normally from the head of the active path.
-**Approach:** `ContinueAgent` (in `test/support/test_agents.ex`) + `branch/2` (regen) with fixtures that produce two segments. First segment: tree drops the duplicate leading user. Second segment's `:turn {:continue, _}`: assert children append normally under the new assistant, and `:sys.get_state(session).regen_source == nil` before the second segment commits.
+**Invariant:** `context/design.md` § 5.7 (Regen mechanics) — the "drop duplicate leading user" rule applies *only* to the first turn of a regen; `regen_source` is cleared after the first commit. Subsequent continuation turns push normally from the head of the active path.
+**Approach:** `ContinueAgent` (in `test/support/test_agents.ex`) + `branch/2` (regen) with fixtures that produce a continuation (first turn ends with `:continue`, second with `:stop`). First turn: tree drops the duplicate leading user. Second turn's `:turn` event: assert children append normally under the new assistant, and `:sys.get_state(session).regen_source == nil` before the second turn commits.
 
 ### Tracker hand-off ordering (observable)
 **File:** new test in `test/omni/session/manager_tracker_test.exs`.
@@ -109,14 +109,14 @@ tested, and a suggested approach. Pick any and run with it.
 
 These were deferred from Pattern C because they need new fixtures or a structural change.
 
-### `persistence_test.exs` per-segment usage mirror
+### `persistence_test.exs` per-turn usage mirror
 **File:** `test/omni/session/persistence_test.exs:63-90`.
-**Issue:** Assertion is `Enum.uniq(usages) |> length() == 1`. Cannot distinguish "attached to last assistant of segment" from "attached to every assistant" — all three segments use identical text fixtures so usages are naturally identical.
-**Approach:** Synthesise (or capture) a multi-assistant-segment fixture where `response.messages` is e.g. `[user, assistant, assistant, ...]`. Then assert only the *last* assistant in each segment carries usage; intermediate assistants have `usage == nil`. This may require a new fixture under `test/support/fixtures/synthetic/`.
+**Issue:** Assertion is `Enum.uniq(usages) |> length() == 1`. Cannot distinguish "attached to the last assistant of each turn" from "attached to every assistant" — all three turns in the continuation use identical text fixtures so usages are naturally identical.
+**Approach:** Synthesise (or capture) a multi-assistant-turn fixture where `response.messages` is e.g. `[user, assistant, assistant, ...]`. Then assert only the *last* assistant in each turn carries usage; intermediate assistants have `usage == nil`. This may require a new fixture under `test/support/fixtures/synthetic/`.
 
-### `continuation_test.exs` segment-usage distinction
+### `continuation_test.exs` per-turn usage distinction
 **File:** `test/omni/agent/continuation_test.exs:78-98`.
-**Issue:** Same `Enum.uniq |> length == 1` weakness. Same fix — reuse the multi-assistant-segment fixture built for the persistence test.
+**Issue:** Same `Enum.uniq |> length == 1` weakness. Same fix — reuse the multi-assistant-turn fixture built for the persistence test.
 
 ### `continuation_test.exs` per-prompt opts are ephemeral
 **File:** `test/omni/agent/continuation_test.exs:120-137`.

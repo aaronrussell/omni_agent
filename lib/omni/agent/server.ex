@@ -1,20 +1,23 @@
 defmodule Omni.Agent.Server do
   @moduledoc false
 
-  # Lifecycle: turn > segment > step
+  # Lifecycle: a turn is one or more steps, ending at a :turn event
+  # that commits turn_messages into state.messages. prompt/3 starts a
+  # turn; {:continue, _} ends the current turn and starts a new one;
+  # {:stop, _} ends the current turn and the agent goes idle.
   #
-  #   prompt/3 ──► TURN START
+  #   prompt/3 ──► turn starts
   #   │
   #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete ──► :step event
   #   │   └─ tool_use? ──► handle_tool_decision_phase ──► spawn_executor
   #   ├─ evaluate_head ──► user msg ──► spawn_step ──► handle_step_complete ──► :step event
   #   │   └─ tool_use? ──► ...repeat...
   #   └─ evaluate_head ──► assistant (no tools) ──► finalize_turn ──► handle_turn
-  #       ├─ {:continue, prompt} ──► :turn {:continue, _} ──► new segment
-  #       └─ {:stop, state}       ──► :turn {:stop, _}     ──► TURN END
+  #       ├─ {:continue, prompt} ──► :turn {:continue, _} ──► new turn starts
+  #       └─ {:stop, state}       ──► :turn {:stop, _}     ──► agent idle
   #
   # Commit happens on every :turn event — both variants flush turn_messages
-  # into state.messages. A segment is the span of turn_messages between commits.
+  # into state.messages.
 
   use GenServer
 
@@ -44,9 +47,9 @@ defmodule Omni.Agent.Server do
     #   continuation prompt, or the tool-result user message). Paired with
     #   the assistant response when emitting :step so :step.response.messages
     #   is always [user, assistant].
-    # turn_messages: messages accumulated in the current segment (committed
-    #   on every :turn event, cleared between segments). A segment is
-    #   always 2n messages — user/assistant pairs.
+    # turn_messages: messages accumulated in the current turn (committed
+    #   on every :turn event, cleared between turns). Always 2n messages
+    #   — user/assistant pairs.
     # turn_usage: accumulated usage for the current turn across all steps.
     # prompt_opts: merged opts for the current turn (state.opts + call-site opts).
     # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
@@ -654,8 +657,8 @@ defmodule Omni.Agent.Server do
   end
 
   defp continue_turn(prompt, server) do
-    {segment, usage, server} = commit_segment(server)
-    response = build_turn_response(server, segment, usage)
+    {messages, usage, server} = commit_turn(server)
+    response = build_turn_response(server, messages, usage)
     notify(server, :turn, {:continue, response})
 
     user_message = Message.new(role: :user, content: prompt)
@@ -665,21 +668,22 @@ defmodule Omni.Agent.Server do
   end
 
   defp complete_turn(_response, server) do
-    {segment, usage, server} = commit_segment(server)
-    response = build_turn_response(server, segment, usage)
+    {messages, usage, server} = commit_turn(server)
+    response = build_turn_response(server, messages, usage)
     server = reset_turn(server)
     notify(server, :turn, {:stop, response})
     server
   end
 
-  # Flushes the current segment into state.messages and resets segment
-  # accumulators. Returns the flushed messages and the segment's usage
-  # so the :turn response reflects just this segment — multi-segment
-  # turns then carry per-segment usage instead of cumulative.
-  defp commit_segment(server) do
-    segment = server.turn_messages
+  # Flushes the current turn's messages into state.messages and resets
+  # the turn accumulators. Returns the flushed messages and the turn's
+  # usage so the :turn response reflects only this turn — a prompt
+  # that runs through continuations carries per-turn usage on each
+  # :turn event instead of cumulative.
+  defp commit_turn(server) do
+    messages = server.turn_messages
     usage = server.turn_usage
-    new_messages = server.state.messages ++ segment
+    new_messages = server.state.messages ++ messages
 
     server = %{
       server
@@ -688,7 +692,7 @@ defmodule Omni.Agent.Server do
         turn_usage: %Usage{}
     }
 
-    {segment, usage, server}
+    {messages, usage, server}
   end
 
   # -- Cancel --
@@ -708,13 +712,13 @@ defmodule Omni.Agent.Server do
 
   # -- Response builders --
 
-  defp build_turn_response(server, segment_messages, usage) do
-    last_assistant = find_last_assistant(segment_messages)
+  defp build_turn_response(server, messages, usage) do
+    last_assistant = find_last_assistant(messages)
 
     %Response{
       model: server.state.model,
       message: last_assistant,
-      messages: segment_messages,
+      messages: messages,
       output: if(server.last_response, do: server.last_response.output),
       stop_reason: if(server.last_response, do: server.last_response.stop_reason, else: :stop),
       usage: usage

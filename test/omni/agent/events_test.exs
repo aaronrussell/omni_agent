@@ -125,8 +125,8 @@ defmodule Omni.Agent.EventsTest do
     end
   end
 
-  describe ":turn response.messages — per-segment semantics" do
-    test "single-segment turn carries the whole segment" do
+  describe ":turn response.messages — per-turn semantics" do
+    test "single-step turn carries the turn's two messages" do
       {:ok, agent} = start_agent()
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
@@ -136,7 +136,7 @@ defmodule Omni.Agent.EventsTest do
       assert [%Message{role: :user}, %Message{role: :assistant}] = resp.messages
     end
 
-    test "continuation turn emits one :turn per segment, each carrying only its own segment" do
+    test "a continuation emits one :turn per turn, each carrying only that turn's messages" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@text_fixture, @text_fixture, @text_fixture]
@@ -145,21 +145,21 @@ defmodule Omni.Agent.EventsTest do
       :ok = Agent.prompt(agent, "Start")
       events = collect_events(agent)
 
-      segments = for {:turn, {_variant, resp}} <- events, do: resp.messages
-      assert length(segments) == 3
+      per_turn = for {:turn, {_variant, resp}} <- events, do: resp.messages
+      assert length(per_turn) == 3
 
-      # Each segment is user + assistant (2 messages), not the cumulative turn
-      for segment <- segments do
-        assert length(segment) == 2
-        assert [%Message{role: :user}, %Message{role: :assistant}] = segment
+      # Each turn is user + assistant (2 messages), not the cumulative across continuations
+      for turn_messages <- per_turn do
+        assert length(turn_messages) == 2
+        assert [%Message{role: :user}, %Message{role: :assistant}] = turn_messages
       end
     end
   end
 
-  describe "segment commit on :turn {:continue, _}" do
-    test "state.messages reflects committed segments as the turn progresses" do
+  describe "turn commit on :turn {:continue, _}" do
+    test "state.messages reflects each committed turn as the continuation progresses" do
       # Serialize observation: each fixture request blocks until we tell it to
-      # proceed, so we can inspect state.messages between segments.
+      # proceed, so we can inspect state.messages between turns.
       stub_name = unique_stub_name()
       {:ok, counter} = Elixir.Agent.start_link(fn -> 0 end)
 

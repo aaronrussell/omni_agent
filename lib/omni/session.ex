@@ -169,7 +169,7 @@ defmodule Omni.Session do
 
       :turn (forwarded) → :tree → :store {:saved, :tree}
 
-  Session commits the segment's messages into the tree after forwarding
+  Session commits the turn's messages into the tree after forwarding
   the Agent's `:turn` event, then persists. Subscribers that want the
   logical turn boundary listen on `:turn`; subscribers that want the
   tree-structure change listen on `:tree`.
@@ -892,11 +892,10 @@ defmodule Omni.Session do
 
   # -- Tree commit --
 
-  # Append each segment message to the tree, attaching the segment's
-  # usage to the last assistant. Because the Agent resets turn_usage
-  # per segment, `usage` is already the segment-scoped total —
-  # Tree.usage/1 sums correctly across multi-segment turns without
-  # double-counting.
+  # Append each turn message to the tree, attaching the turn's usage
+  # to its last assistant. Because the Agent resets turn_usage per
+  # turn, `usage` is already the turn-scoped total — Tree.usage/1 sums
+  # correctly across continuations without double-counting.
   defp compute_tree_commit(messages, usage, tree) do
     last_assistant = find_last_assistant(messages)
 
@@ -919,7 +918,7 @@ defmodule Omni.Session do
   # Regen (`branch/2`) navigates the tree path to the target user and
   # records the user's id in `regen_source`. On the first :turn commit
   # after that, we drop the leading (duplicate) user from the response
-  # and clear the flag — continuation segments then push normally.
+  # and clear the flag — any following continuation turns push normally.
   defp consume_regen_source(messages, %{regen_source: nil} = session),
     do: {messages, session}
 

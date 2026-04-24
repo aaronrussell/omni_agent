@@ -129,8 +129,8 @@ defmodule Omni.Agent do
       {:agent, pid, :message,     %Message{}}                        # message appended to pending
       {:agent, pid, :tool_result, %ToolResult{}}                     # tool executed, result available
       {:agent, pid, :step,        %Response{}}                       # step complete, per-step response
-      {:agent, pid, :turn,        {:continue, %Response{}}}          # segment committed, turn continues
-      {:agent, pid, :turn,        {:stop, %Response{}}}              # turn ended, pending committed, idle
+      {:agent, pid, :turn,        {:continue, %Response{}}}          # turn committed, next turn follows
+      {:agent, pid, :turn,        {:stop, %Response{}}}              # turn committed, agent idle
       {:agent, pid, :pause,       {reason, %ToolUse{}}}              # waiting for tool decision
       {:agent, pid, :retry,       reason}                            # non-terminal error, agent retrying
       {:agent, pid, :error,       reason}                            # terminal error, agent goes idle
@@ -150,12 +150,15 @@ defmodule Omni.Agent do
   message that prompted the step (the initial turn prompt, a continuation
   prompt, or a tool-result user message) and the assistant response.
 
-  `:turn` fires at segment boundaries and commits the segment's pending
-  messages to `state.messages`. `{:continue, response}` means the turn
-  keeps going — a continuation user message is appended next.
-  `{:stop, response}` means the turn is done and the agent is idle. Each
-  `:turn` event's response carries only that segment's committed
-  messages, not the whole turn's.
+  `:turn` fires each time a turn completes and commits that turn's
+  pending messages to `state.messages`. `{:continue, response}` means
+  `handle_turn/2` requested another turn — a continuation user message
+  is appended and a new turn begins immediately. `{:stop, response}`
+  means the agent is idle. A single `prompt/3` therefore produces one
+  `:turn {:stop, _}`, optionally preceded by any number of
+  `:turn {:continue, _}` events; each event's response carries only
+  the just-committed turn's messages and usage, not the cumulative
+  across continuations.
 
   `:cancelled` fires after `cancel/1` with `stop_reason: :cancelled` —
   pending messages are discarded (`state.messages` unchanged). `:error`
@@ -200,9 +203,9 @@ defmodule Omni.Agent do
   Subscribers are cleaned up automatically when they die.
 
   `get_snapshot/1` returns a `%Omni.Agent.Snapshot{}` holding the
-  committed state, the segment's pending messages, and the current
-  streaming assistant message (if any). Compose everything known right
-  now as `state.messages ++ pending ++ List.wrap(partial)`.
+  committed state, the pending messages of the in-flight turn, and the
+  current streaming assistant message (if any). Compose everything
+  known right now as `state.messages ++ pending ++ List.wrap(partial)`.
 
   ## Pause and resume
 
@@ -393,11 +396,12 @@ defmodule Omni.Agent do
   - `:length` — output was truncated (hit max output tokens)
   - `:refusal` — the model declined due to content or safety policy
 
-  Return `{:stop, state}` to end the turn (subscribers receive
-  `{:agent, pid, :turn, {:stop, response}}`), or `{:continue, content, state}`
-  to commit the current segment and append a new user message
-  (subscribers receive `{:agent, pid, :turn, {:continue, response}}`).
-  The `content` argument accepts a string or a list of content blocks.
+  Return `{:stop, state}` to end the current turn and go idle
+  (subscribers receive `{:agent, pid, :turn, {:stop, response}}`), or
+  `{:continue, content, state}` to commit the current turn and start a
+  new turn with `content` as the next user message (subscribers
+  receive `{:agent, pid, :turn, {:continue, response}}`). The `content`
+  argument accepts a string or a list of content blocks.
 
   If a staged prompt exists (from `prompt/3` while busy), it overrides this
   callback's decision. See the "Prompt queuing" section in the moduledoc.
@@ -588,11 +592,12 @@ defmodule Omni.Agent do
   @doc """
   Subscribes the caller to agent events.
 
-  Returns `{:ok, %Snapshot{}}` — the snapshot captures the agent's state,
-  pending segment messages, and any currently-streaming assistant message
-  at the instant of subscription. Every event emitted after this call is
-  delivered to the caller, so a subscriber joining mid-stream can
-  populate its view and keep up without gaps.
+  Returns `{:ok, %Snapshot{}}` — the snapshot captures the agent's
+  state, the in-flight turn's pending messages, and any
+  currently-streaming assistant message at the instant of
+  subscription. Every event emitted after this call is delivered to
+  the caller, so a subscriber joining mid-stream can populate its view
+  and keep up without gaps.
 
   Subscribing is idempotent. Subscribers are monitored and removed
   automatically when they die.
@@ -620,7 +625,7 @@ defmodule Omni.Agent do
   @doc """
   Returns a `%Omni.Agent.Snapshot{}` of the agent right now.
 
-  The snapshot bundles the committed state, the in-flight segment's
+  The snapshot bundles the committed state, the in-flight turn's
   pending messages, and the currently-streaming assistant message
   (if any). Compose everything the agent knows as
   `state.messages ++ pending ++ List.wrap(partial)`.

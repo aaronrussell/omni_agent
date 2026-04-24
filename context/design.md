@@ -132,28 +132,30 @@ Two logical tiers:
   refs, closures) — not settable via `set_state`, mutated via
   `%{state | private: _}` inside callbacks.
 
-`state.messages` is **committed-only**. In-flight segment messages
-live in the internal server struct as `turn_messages` until committed
-at a `:turn` event. `state.messages` always ends with an assistant
-message containing no `ToolUse` blocks, or is empty — an invariant
-enforced at turn boundaries and re-enforced at `set_state(:messages,
-...)` and the state returned from `init/1`.
+`state.messages` is **committed-only**. In-flight messages live in
+the internal server struct as `turn_messages` until committed at a
+`:turn` event. `state.messages` always ends with an assistant message
+containing no `ToolUse` blocks, or is empty — an invariant enforced
+at turn boundaries and re-enforced at `set_state(:messages, ...)` and
+the state returned from `init/1`.
 
 ### 4.2 Turn lifecycle
 
-Three levels:
+Two levels:
 
 - **Step** — one LLM request-response cycle. Calls `stream_text` with
   `max_steps: 1`. If the model emits tool uses, the agent handles them
   and launches another step.
-- **Segment** — one natural stop by the model. A `:turn` event
-  (`{:stop, _}` or `{:continue, _}`) commits the segment's messages.
-- **Turn** — starts with `prompt/3`, ends with `:turn {:stop, _}` or
-  `:cancelled` / `:error`.
+- **Turn** — one or more sequential steps, ending at a `:turn` event
+  (`{:stop, _}` or `{:continue, _}`), which commits the turn's
+  messages. A turn started by `prompt/3` ends with `:turn {:stop, _}`
+  or `:cancelled` / `:error`.
 
-A turn may contain multiple segments (via `handle_turn` returning
-`{:continue, content, state}`) and each segment may contain multiple
-steps (if the model called tools).
+A turn may contain multiple steps (if the model called tools). A
+`:turn {:continue, _}` (via `handle_turn` returning
+`{:continue, content, state}`) starts a new turn immediately —
+continuations are just multiple turns concatenated, not a
+higher-level unit.
 
 **Commit semantics.** In-flight messages accumulate in `turn_messages`.
 On every `:turn` event, `turn_messages` commit to `state.messages` —
@@ -295,7 +297,7 @@ for cleanup on death.
 :message       %Message{}                           # msg appended to turn_messages
 :tool_result   %ToolResult{}                        # one per tool (executed / rejected / provided)
 :step          %Response{messages: [user, asst]}    # step completed
-:turn          {:continue, %Response{}}             # segment committed, turn continues
+:turn          {:continue, %Response{}}             # turn committed, next turn follows
 :turn          {:stop, %Response{}}                 # turn ended, agent idle
 :pause         {reason, %ToolUse{}}                 # waiting on resume/2
 :retry         reason                               # handle_error returned :retry
@@ -308,7 +310,7 @@ for cleanup on death.
 **Key contracts:**
 
 - `:message` fires whenever a message is appended to the in-flight
-  segment:
+  turn:
   - For the **assistant** response, after all streaming deltas for
     that message and before `:step`.
   - For **user-role** messages (initial prompt, continuation prompt,
@@ -317,9 +319,9 @@ for cleanup on death.
 - `:step.response.messages` is always exactly `[user, assistant]` —
   the user message that prompted the step (initial prompt, continuation
   prompt, or tool-result user) and the assistant response.
-- `:turn.response.messages` contains only the segment's messages
-  (not the full turn's). Usage on `:turn` is segment-scoped — the Agent
-  resets `turn_usage` per segment so multi-segment turns don't
+- `:turn.response.messages` contains only that turn's messages (not
+  the whole continuation chain). Usage on `:turn` is turn-scoped —
+  the Agent resets `turn_usage` per turn so continuations don't
   double-count.
 - `:status` fires on every status transition and always precedes the
   event that caused the transition (e.g. `:status :idle` before `:turn
@@ -447,7 +449,7 @@ grouping is a projection the UI/app computes.
 - Empty `path` is valid — allows multiple disjoint roots on a single
   tree.
 
-Usage is attached to the segment's last assistant node. `Tree.usage/1`
+Usage is attached to the turn's last assistant node. `Tree.usage/1`
 sums usage across the full node set (not just the active path).
 
 ### 5.3 Start modes
@@ -614,8 +616,8 @@ current status atom (`:busy`, `:paused`) if not idle.
 7. On the first `:turn` commit, drop the leading (duplicate) user
    from `response.messages` and push the rest as children of
    `user_id`. Clear `regen_source`.
-8. Continuation segments push normally — the drop applies only to the
-   first segment.
+8. Subsequent continuation turns push normally — the drop applies
+   only to the first turn of the regen.
 9. `:cancelled` / `:error` clears `regen_source` without tree
    mutation. Tree path remains on `user_id`; a subsequent call
    resyncs.

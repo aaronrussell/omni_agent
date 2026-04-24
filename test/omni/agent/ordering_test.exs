@@ -251,14 +251,14 @@ defmodule Omni.Agent.OrderingTest do
     end
   end
 
-  describe ":turn response fields across segments" do
-    # Finding #2: commit_segment does not clear last_response. build_turn_response
+  describe ":turn response fields across continuations" do
+    # Finding #2: commit_turn does not clear last_response. build_turn_response
     # reads last_response for :stop_reason and :output. In normal flow
     # handle_step_complete always overwrites last_response before finalize_turn
     # fires, so this test is expected to pass — its purpose is to pin down that
     # invariant so a future regression (e.g. a new code path that calls
     # finalize_turn without a fresh step) would surface here.
-    test "each :turn response's stop_reason matches that segment's last :step stop_reason" do
+    test "each :turn response's stop_reason matches that turn's last :step stop_reason" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@text_fixture, @text_fixture, @text_fixture]
@@ -267,9 +267,9 @@ defmodule Omni.Agent.OrderingTest do
       :ok = Agent.prompt(agent, "Start")
       events = collect_events(agent)
 
-      # Split events into segments, each terminated by a :turn event.
-      # For each segment, compare the last :step's stop_reason with the :turn's.
-      {segments, _} =
+      # Split events into turns, each terminated by a :turn event.
+      # For each turn, compare the last :step's stop_reason with the :turn's.
+      {turns, _} =
         Enum.reduce(events, {[], []}, fn
           {:turn, {_kind, response}}, {done, acc} ->
             {[{Enum.reverse(acc), response} | done], []}
@@ -278,16 +278,16 @@ defmodule Omni.Agent.OrderingTest do
             {done, [event | acc]}
         end)
 
-      segments = Enum.reverse(segments)
-      assert length(segments) == 3
+      turns = Enum.reverse(turns)
+      assert length(turns) == 3
 
-      for {segment_events, turn_response} <- segments do
-        step_events = for {:step, step_resp} <- segment_events, do: step_resp
-        assert step_events != [], "segment had no :step events: #{inspect(segment_events)}"
+      for {turn_events, turn_response} <- turns do
+        step_events = for {:step, step_resp} <- turn_events, do: step_resp
+        assert step_events != [], "turn had no :step events: #{inspect(turn_events)}"
         last_step = List.last(step_events)
 
         assert turn_response.stop_reason == last_step.stop_reason,
-               "segment's :turn stop_reason (#{inspect(turn_response.stop_reason)}) must match its last :step stop_reason (#{inspect(last_step.stop_reason)})"
+               "turn's :turn stop_reason (#{inspect(turn_response.stop_reason)}) must match its last :step stop_reason (#{inspect(last_step.stop_reason)})"
       end
     end
   end

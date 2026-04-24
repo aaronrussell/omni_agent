@@ -74,9 +74,13 @@ lib/omni/
 ### Terminology
 
 - **Tool use**, not "tool call" (aligns with Anthropic and `omni`).
-- **Turn** = one prompt-to-stop cycle. **Segment** = one natural stop
-  within a turn (at `:turn {:continue, _}` or `:turn {:stop, _}`).
-  **Step** = one LLM request-response.
+- **Message** = a single message. **Step** = one LLM request-response
+  cycle (user → assistant message). **Turn** = one or more sequential
+  steps ending at a `:turn` event (`{:stop, _}` or `{:continue, _}`),
+  which commits the turn's messages to `state.messages`. A `:turn
+  {:continue, _}` is followed immediately by another turn — a
+  continuation is just multiple turns concatenated. There is no
+  higher-level unit than a turn; don't say "segment".
 - Agent statuses: `:idle`, `:busy`, `:paused`. Status determines
   which API calls are valid. Navigation and branching on Session are
   **idle-only**; `prompt/3` is not.
@@ -103,10 +107,10 @@ lib/omni/
 - `:step.response.messages` is always `[user, assistant]` — exactly
   two messages. The user is whatever prompted the step (initial
   prompt, continuation, or tool-result user).
-- `:turn.response.messages` is segment-scoped — only the messages
-  committed in that segment, and `response.usage` is segment-scoped
-  too (turn_usage resets per segment to avoid double-counting in the
-  persisted tree).
+- `:turn.response.messages` is turn-scoped — only the messages
+  committed in that turn, and `response.usage` is turn-scoped too
+  (`turn_usage` resets per turn to avoid double-counting across
+  continuations in the persisted tree).
 - `:status` precedes every event derived from a status transition
   (e.g. `:status :idle` before `:turn {:stop, _}`). Idempotent
   transitions don't emit.

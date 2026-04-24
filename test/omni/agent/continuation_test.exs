@@ -76,7 +76,7 @@ defmodule Omni.Agent.ContinuationTest do
   end
 
   describe "usage in response" do
-    test "each :turn event's usage reflects only its segment, not the cumulative turn" do
+    test "each :turn event's usage reflects only its own turn, not the cumulative across continuations" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@text_fixture, @text_fixture, @text_fixture]
@@ -89,8 +89,8 @@ defmodule Omni.Agent.ContinuationTest do
         for {:turn, {_kind, %Response{usage: usage}}} <- events, do: usage.total_tokens
 
       assert length(turn_usages) == 3
-      # All three segments use the same fixture, so per-segment usage must
-      # be equal. If turn_usage failed to reset between segments the values
+      # All three turns use the same fixture, so per-turn usage must be
+      # equal. If turn_usage failed to reset between turns the values
       # would be X, 2X, 3X — non-equal and accumulating.
       assert Enum.uniq(turn_usages) |> length() == 1
       assert hd(turn_usages) > 0
@@ -98,7 +98,7 @@ defmodule Omni.Agent.ContinuationTest do
   end
 
   describe "continue event content" do
-    test ":turn {:continue, _} carries segment response with messages" do
+    test ":turn {:continue, _} carries the turn's response with messages" do
       {:ok, agent} =
         start_agent_with_module(ContinueAgent,
           fixtures: [@text_fixture, @text_fixture, @text_fixture]
@@ -110,7 +110,7 @@ defmodule Omni.Agent.ContinuationTest do
       continue_events = for {:turn, {:continue, data}} <- events, do: data
       assert length(continue_events) == 2
 
-      # First continue should carry this segment's 2 messages (user + assistant)
+      # First continue should carry this turn's 2 messages (user + assistant)
       [first_continue | _] = continue_events
       assert %Response{} = first_continue
       assert length(first_continue.messages) == 2

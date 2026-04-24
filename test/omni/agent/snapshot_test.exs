@@ -78,7 +78,7 @@ defmodule Omni.Agent.SnapshotTest do
       snapshot = Agent.get_snapshot(agent)
       assert snapshot.pending == []
       assert snapshot.partial == nil
-      # ContinueAgent runs three segments before stopping.
+      # ContinueAgent runs three turns (two continuations, then stop).
       assert length(snapshot.state.messages) == 6
     end
   end

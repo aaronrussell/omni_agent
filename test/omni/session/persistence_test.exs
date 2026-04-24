@@ -60,7 +60,7 @@ defmodule Omni.Session.PersistenceTest do
       assert Tree.size(tree) == 4
     end
 
-    test "multi-segment turn: per-segment usage attaches to each segment's assistant", ctx do
+    test "continuation: per-turn usage attaches to each turn's assistant", ctx do
       {session, _} =
         start_session(ctx,
           new: "s1",
@@ -79,13 +79,13 @@ defmodule Omni.Session.PersistenceTest do
         |> Enum.filter(&(&1.message.role == :assistant))
         |> Enum.sort_by(& &1.id)
 
-      # 3 segments × 1 assistant each
+      # 3 turns × 1 assistant each
       assert length(assistant_nodes) == 3
       usages = Enum.map(assistant_nodes, & &1.usage.total_tokens)
 
-      # All three segments used the same fixture, so their usages should
-      # be equal — fix_turn_usage_per_segment verifies the Agent doesn't
-      # accumulate across segments.
+      # All three turns used the same fixture, so their usages should
+      # be equal — the Agent's per-turn turn_usage reset guarantees
+      # usages don't accumulate across continuations.
       assert Enum.uniq(usages) |> length() == 1
     end
   end
