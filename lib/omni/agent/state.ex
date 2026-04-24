@@ -24,7 +24,7 @@ defmodule Omni.Agent.State do
     Set initial values via the `:private` start option or in `init/1`,
     update in any callback via `%{state | private: ...}`. Not settable via
     `set_state/2,3`
-  - `:status` — `:idle`, `:running`, or `:paused`
+  - `:status` — `:idle`, `:busy`, or `:paused`
   - `:step` — current step counter within the active turn. Resets to `0`
     when a new turn begins. Useful for step-based policies in callbacks
     (e.g. rejecting tools after a threshold)
@@ -40,7 +40,7 @@ defmodule Omni.Agent.State do
           tools: [Tool.t()],
           opts: keyword(),
           private: map(),
-          status: :idle | :running | :paused,
+          status: :idle | :busy | :paused,
           step: non_neg_integer()
         }
 

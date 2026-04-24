@@ -84,7 +84,7 @@ defmodule Omni.Session.MutationTest do
       assert Session.get_agent(session, :tools) == []
     end
 
-    test "add_tool during paused turn: returns :running", ctx do
+    test "add_tool during paused turn: returns :paused", ctx do
       {session, _} =
         start_session(ctx,
           agent_module: PauseAgent,
@@ -95,7 +95,7 @@ defmodule Omni.Session.MutationTest do
       :ok = Session.prompt(session, "Use the tool")
       assert_receive {:session, ^session, :pause, _}, 1000
 
-      assert {:error, :running} = Session.add_tool(session, noop_tool())
+      assert {:error, :paused} = Session.add_tool(session, noop_tool())
     end
   end
 

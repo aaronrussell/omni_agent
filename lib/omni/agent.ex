@@ -136,7 +136,7 @@ defmodule Omni.Agent do
       {:agent, pid, :error,       reason}                            # terminal error, agent goes idle
       {:agent, pid, :cancelled,   %Response{stop_reason: :cancelled}} # cancel/1 invoked; pending discarded
       {:agent, pid, :state,       %State{}}                          # set_state mutation applied
-      {:agent, pid, :status,      :idle | :running | :paused}        # status transitioned
+      {:agent, pid, :status,      :idle | :busy | :paused}           # status transitioned
 
   `:message` fires each time a message is appended to the in-flight
   pending queue — the initial user message, each assistant response after
@@ -162,10 +162,10 @@ defmodule Omni.Agent do
   fires after `handle_error/2` returns `{:stop, state}` — pending
   messages are discarded and the agent goes idle. `:state` fires after a
   successful `set_state/2,3` call with the full new `%State{}`. `:status`
-  fires on every lifecycle transition (`:idle`/`:running`/`:paused`)
+  fires on every lifecycle transition (`:idle`/`:busy`/`:paused`)
   and always precedes the derived event that caused the transition
   (e.g. `:status :idle` before `:turn {:stop, _}`). A simple chatbot
-  (one step per prompt) sees `:status :running → :message(user) →
+  (one step per prompt) sees `:status :busy → :message(user) →
   :message(assistant) → :step → :status :idle → :turn {:stop, _}`.
 
   ## Tools and the agent loop
@@ -220,7 +220,7 @@ defmodule Omni.Agent do
 
   ## Prompt queuing
 
-  Calling `prompt/3` while the agent is running or paused stages the content
+  Calling `prompt/3` while the agent is busy or paused stages the content
   for the next turn boundary. When the current step sequence completes:
 
   - `handle_turn/2` fires as normal (for bookkeeping, state updates)
@@ -399,7 +399,7 @@ defmodule Omni.Agent do
   (subscribers receive `{:agent, pid, :turn, {:continue, response}}`).
   The `content` argument accepts a string or a list of content blocks.
 
-  If a staged prompt exists (from `prompt/3` while running), it overrides this
+  If a staged prompt exists (from `prompt/3` while busy), it overrides this
   callback's decision. See the "Prompt queuing" section in the moduledoc.
 
   Default: `{:stop, state}`.
@@ -562,10 +562,11 @@ defmodule Omni.Agent do
   - `{:reject, reason}` — reject with an error result sent to the model
   - `{:result, result}` — provide a `%ToolResult{}` directly
 
-  Returns `{:error, :not_paused}` if the agent is not paused.
+  Returns `{:error, status}` with the current status (`:idle` or `:busy`)
+  if the agent is not paused.
   """
   @spec resume(GenServer.server(), :execute | {:reject, term()} | {:result, ToolResult.t()}) ::
-          :ok | {:error, :not_paused}
+          :ok | {:error, :idle | :busy}
   def resume(agent, decision) do
     GenServer.call(agent, {:resume, decision})
   end
@@ -665,9 +666,11 @@ defmodule Omni.Agent do
   `%{state | private: ...}`.
 
   Unrecognized keys return `{:error, {:invalid_key, key}}`.
-  Returns `{:error, :running}` if the agent is running or paused.
+  Returns `{:error, status}` with the current status (`:busy` or `:paused`)
+  when the agent is not idle.
   """
-  @spec set_state(GenServer.server(), keyword()) :: :ok | {:error, :running} | {:error, term()}
+  @spec set_state(GenServer.server(), keyword()) ::
+          :ok | {:error, :busy | :paused} | {:error, term()}
   def set_state(agent, opts) when is_list(opts) do
     GenServer.call(agent, {:set_state, opts})
   end
@@ -686,10 +689,11 @@ defmodule Omni.Agent do
   Settable fields: `:model`, `:system`, `:messages`, `:tools`, `:opts`.
   Returns `{:error, {:invalid_key, field}}` for other fields.
   Returns `{:error, :invalid_messages}` if `:messages` fails the invariant.
-  Returns `{:error, :running}` if the agent is running or paused.
+  Returns `{:error, status}` with the current status (`:busy` or `:paused`)
+  when the agent is not idle.
   """
   @spec set_state(GenServer.server(), atom(), term() | (term() -> term())) ::
-          :ok | {:error, :running} | {:error, term()}
+          :ok | {:error, :busy | :paused} | {:error, term()}
   def set_state(agent, field, value_or_fun) when is_atom(field) do
     GenServer.call(agent, {:set_state, field, value_or_fun})
   end

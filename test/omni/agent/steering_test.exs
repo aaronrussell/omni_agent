@@ -21,7 +21,7 @@ defmodule Omni.Agent.SteeringTest do
   end
 
   describe "steering" do
-    test "prompt while running returns :ok (not {:error, :running})" do
+    test "prompt while busy returns :ok (not {:error, :busy})" do
       stub_name = unique_stub_name()
       stub_slow(stub_name, @text_fixture, 200)
 

@@ -50,16 +50,17 @@ defmodule Omni.Agent.MixProject do
       groups_for_modules: [
         Sessions: [
           Omni.Session,
-          ~r/^Omni\.Session\.(?!Store).+$/,
+          ~r/^Omni\.Session\.(?!Store).+$/
         ],
-        Stores: ~r/^Omni\.Session\.Store/,
-      ],
+        Stores: ~r/^Omni\.Session\.Store/
+      ]
     ]
   end
 
   defp pkg do
     [
-      description: "Stateful LLM agents for Elixir — persistent, branching conversations, tool approval, steering, and multi-session management. Built on Omni.",
+      description:
+        "Stateful LLM agents for Elixir — persistent, branching conversations, tool approval, steering, and multi-session management. Built on Omni.",
       licenses: ["Apache-2.0"],
       maintainers: ["Aaron Russell"],
       files: ~w(lib .formatter.exs mix.exs CHANGELOG.md LICENSE README.md),

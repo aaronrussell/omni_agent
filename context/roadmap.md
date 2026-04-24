@@ -34,6 +34,6 @@ scheduled.
 
 - **`init/1` returning an initial prompt.** An extended `init/1` return
   (or `:prompt` start option) that puts the agent straight into
-  `:running` with a staged prompt, producing a response before the
+  `:busy` with a staged prompt, producing a response before the
   caller interacts. Needs concrete use cases before a shape is worth
   committing to.

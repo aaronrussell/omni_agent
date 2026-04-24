@@ -164,7 +164,7 @@ defmodule Omni.Agent.Server do
         _from,
         %__MODULE__{state: %{status: status}} = server
       )
-      when status in [:running, :paused] do
+      when status in [:busy, :paused] do
     {:reply, :ok, %{server | next_prompt: {content, opts}}}
   end
 
@@ -173,12 +173,12 @@ defmodule Omni.Agent.Server do
 
     server = %{
       server
-      | state: %{server.state | status: :running},
+      | state: %{server.state | status: :busy},
         paused_use: nil,
         paused_reason: nil
     }
 
-    notify(server, :status, :running)
+    notify(server, :status, :busy)
 
     server =
       case decision do
@@ -204,12 +204,12 @@ defmodule Omni.Agent.Server do
     {:reply, :ok, server}
   end
 
-  def handle_call({:resume, _decision}, _from, server) do
-    {:reply, {:error, :not_paused}, server}
+  def handle_call({:resume, _decision}, _from, %__MODULE__{state: %{status: status}} = server) do
+    {:reply, {:error, status}, server}
   end
 
   def handle_call(:cancel, _from, %__MODULE__{state: %{status: status}} = server)
-      when status in [:running, :paused] do
+      when status in [:busy, :paused] do
     server = do_cancel(server)
     {:reply, :ok, server}
   end
@@ -292,9 +292,12 @@ defmodule Omni.Agent.Server do
     {:reply, {:error, {:invalid_key, field}}, server}
   end
 
-  # Catch-all for mutating ops while running or paused
-  def handle_call({:set_state, _}, _from, server), do: {:reply, {:error, :running}, server}
-  def handle_call({:set_state, _, _}, _from, server), do: {:reply, {:error, :running}, server}
+  # Catch-all for mutating ops while busy or paused
+  def handle_call({:set_state, _}, _from, %__MODULE__{state: %{status: status}} = server),
+    do: {:reply, {:error, status}, server}
+
+  def handle_call({:set_state, _, _}, _from, %__MODULE__{state: %{status: status}} = server),
+    do: {:reply, {:error, status}, server}
 
   def handle_call(:get_state, _from, server), do: {:reply, server.state, server}
 
@@ -398,12 +401,12 @@ defmodule Omni.Agent.Server do
 
     %{
       server
-      | state: %{server.state | status: :running, step: 0},
+      | state: %{server.state | status: :busy, step: 0},
         step_message: user_message,
         turn_messages: [user_message],
         prompt_opts: prompt_opts
     }
-    |> tap(&notify(&1, :status, :running))
+    |> tap(&notify(&1, :status, :busy))
     |> tap(&notify(&1, :message, user_message))
     |> evaluate_head()
   end

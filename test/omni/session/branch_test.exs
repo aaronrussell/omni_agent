@@ -157,7 +157,7 @@ defmodule Omni.Session.BranchTest do
   end
 
   describe "idle gate" do
-    test "branch/2 during paused turn: returns :not_idle", ctx do
+    test "branch/2 during paused turn: returns :paused", ctx do
       {session, _} =
         start_session(ctx,
           agent_module: PauseAgent,
@@ -169,10 +169,10 @@ defmodule Omni.Session.BranchTest do
       assert_receive {:session, ^session, :pause, _}, 1000
 
       # Doesn't matter that node 1 exists — idle check short-circuits.
-      assert {:error, :not_idle} = Session.branch(session, 1)
+      assert {:error, :paused} = Session.branch(session, 1)
     end
 
-    test "branch/3 during paused turn: returns :not_idle", ctx do
+    test "branch/3 during paused turn: returns :paused", ctx do
       {session, _} =
         start_session(ctx,
           agent_module: PauseAgent,
@@ -183,7 +183,7 @@ defmodule Omni.Session.BranchTest do
       :ok = Session.prompt(session, "Use the tool")
       assert_receive {:session, ^session, :pause, _}, 1000
 
-      assert {:error, :not_idle} = Session.branch(session, 2, "new")
+      assert {:error, :paused} = Session.branch(session, 2, "new")
     end
   end
 

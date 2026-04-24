@@ -88,8 +88,8 @@ defmodule Omni.Session do
   `Omni.Session.Tree` helpers: `children/2`, `siblings/2`, `path_to/2`,
   and `Enumerable` over the active path.
 
-  All three operations are idle-only — they return `{:error, :not_idle}`
-  when a turn is in flight.
+  All three operations are idle-only — they return `{:error, status}`
+  with the current status (`:busy` or `:paused`) when a turn is in flight.
 
   ## Start options
 
@@ -286,7 +286,7 @@ defmodule Omni.Session do
   def cancel(session), do: GenServer.call(session, :cancel)
 
   @doc "Resumes a paused Agent. See `Omni.Agent.resume/2`."
-  @spec resume(GenServer.server(), term()) :: :ok | {:error, :not_paused}
+  @spec resume(GenServer.server(), term()) :: :ok | {:error, :idle | :busy}
   def resume(session, decision), do: GenServer.call(session, {:resume, decision})
 
   @doc """
@@ -361,13 +361,13 @@ defmodule Omni.Session do
   the `:state` event path; other settable keys do not persist.
   """
   @spec set_agent(GenServer.server(), keyword()) ::
-          :ok | {:error, :running} | {:error, term()}
+          :ok | {:error, :busy | :paused} | {:error, term()}
   def set_agent(session, opts) when is_list(opts),
     do: GenServer.call(session, {:set_agent, opts})
 
   @doc "Replaces or transforms a single Agent field. Passthrough to `Omni.Agent.set_state/3`."
   @spec set_agent(GenServer.server(), atom(), term() | (term() -> term())) ::
-          :ok | {:error, :running} | {:error, term()}
+          :ok | {:error, :busy | :paused} | {:error, term()}
   def set_agent(session, field, value_or_fun) when is_atom(field),
     do: GenServer.call(session, {:set_agent, field, value_or_fun})
 
@@ -378,10 +378,11 @@ defmodule Omni.Session do
   along the way. The wrapped Agent is resynced via
   `Omni.Agent.set_state(messages: _)` with the new path's messages.
 
-  Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
+  Idle-only: returns `{:error, status}` with the current status (`:busy`
+  or `:paused`) when a turn is in flight.
   """
   @spec navigate(GenServer.server(), Tree.node_id() | nil) ::
-          :ok | {:error, :not_found | :not_idle | term()}
+          :ok | {:error, :not_found | :busy | :paused | term()}
   def navigate(session, node_id), do: GenServer.call(session, {:navigate, node_id})
 
   @doc """
@@ -393,10 +394,11 @@ defmodule Omni.Session do
   the leading (duplicate) user message is dropped and the remainder is
   pushed as children of `node_id`.
 
-  Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
+  Idle-only: returns `{:error, status}` with the current status (`:busy`
+  or `:paused`) when a turn is in flight.
   """
   @spec branch(GenServer.server(), Tree.node_id()) ::
-          :ok | {:error, :not_found | :not_idle | :not_user_node | term()}
+          :ok | {:error, :not_found | :busy | :paused | :not_user_node | term()}
   def branch(session, node_id), do: GenServer.call(session, {:branch, node_id})
 
   @doc """
@@ -409,10 +411,11 @@ defmodule Omni.Session do
     given content — the atomic equivalent of `navigate(session,
     nil)` followed by `prompt(session, content)`.
 
-  Idle-only: returns `{:error, :not_idle}` when a turn is in flight.
+  Idle-only: returns `{:error, status}` with the current status (`:busy`
+  or `:paused`) when a turn is in flight.
   """
   @spec branch(GenServer.server(), Tree.node_id() | nil, term()) ::
-          :ok | {:error, :not_found | :not_idle | :not_assistant_node | term()}
+          :ok | {:error, :not_found | :busy | :paused | :not_assistant_node | term()}
   def branch(session, node_id, content),
     do: GenServer.call(session, {:branch, node_id, content})
 
@@ -429,7 +432,7 @@ defmodule Omni.Session do
   `set_agent(:tools, _)`. Tools are not persisted.
   """
   @spec add_tool(GenServer.server(), Omni.Tool.t()) ::
-          :ok | {:error, :running} | {:error, term()}
+          :ok | {:error, :busy | :paused} | {:error, term()}
   def add_tool(session, tool), do: set_agent(session, :tools, &(&1 ++ [tool]))
 
   @doc """
@@ -437,7 +440,7 @@ defmodule Omni.Session do
   no-op if no matching tool exists.
   """
   @spec remove_tool(GenServer.server(), String.t()) ::
-          :ok | {:error, :running} | {:error, term()}
+          :ok | {:error, :busy | :paused} | {:error, term()}
   def remove_tool(session, tool_name) when is_binary(tool_name),
     do: set_agent(session, :tools, &Enum.reject(&1, fn t -> t.name == tool_name end))
 
@@ -928,7 +931,7 @@ defmodule Omni.Session do
   defp require_idle(session) do
     case Agent.get_state(session.agent, :status) do
       :idle -> :ok
-      _ -> {:error, :not_idle}
+      status -> {:error, status}
     end
   end
 

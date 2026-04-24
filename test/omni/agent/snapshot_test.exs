@@ -43,7 +43,7 @@ defmodule Omni.Agent.SnapshotTest do
       Process.sleep(50)
 
       snapshot = Agent.get_snapshot(agent)
-      assert snapshot.state.status == :running
+      assert snapshot.state.status == :busy
       assert [%Message{role: :user}] = snapshot.pending
       # Note: :partial may be nil or a streaming message depending on how
       # far the stream has gotten. Both are consistent with the invariant —

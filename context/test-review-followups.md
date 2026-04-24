@@ -66,7 +66,7 @@ tested, and a suggested approach. Pick any and run with it.
 
 ### Session `:status :paused` forwarding
 **File:** `test/omni/session/status_forwarding_test.exs`.
-**Gap:** Only `:running`/`:idle` paths are tested. Use `PauseAgent` to force a pause and assert the session forwards the `:paused` status event.
+**Gap:** Only `:busy`/`:idle` paths are tested. Use `PauseAgent` to force a pause and assert the session forwards the `:paused` status event.
 
 ### `Tree.new/1` hydrate-then-mutate with sparse IDs
 **File:** `test/omni/session/tree_test.exs`.
@@ -142,7 +142,7 @@ These were deferred from Pattern C because they need new fixtures or a structura
 
 ### Agent error tests assume `step_task` is set
 **File:** `test/omni/agent/error_test.exs:65-165` (three tests).
-**Status:** Partially addressed in commit `0127ab7` (added `:running` sync before `:sys.get_state`). Still uses `:sys.get_state` to grab `step_task` / `executor_task`. Left as-is intentionally; flag for future cleanup if a behavioural alternative emerges.
+**Status:** Partially addressed in commit `0127ab7` (added `:busy` sync before `:sys.get_state`). Still uses `:sys.get_state` to grab `step_task` / `executor_task`. Left as-is intentionally; flag for future cleanup if a behavioural alternative emerges.
 
 ### `idle_shutdown_test.exs` shutdown_timer field reads
 **File:** `test/omni/session/idle_shutdown_test.exs`.

@@ -99,7 +99,7 @@ defmodule Omni.Session.Manager do
   @type entry :: %{
           id: id(),
           title: String.t() | nil,
-          status: :idle | :running | :paused,
+          status: :idle | :busy | :paused,
           pid: pid()
         }
 

@@ -74,7 +74,7 @@ defmodule Omni.Session.NavigationTest do
       refute_receive {:session, ^session, :store, {:saved, :state}}, 200
     end
 
-    test "during a paused turn: returns :not_idle", ctx do
+    test "during a paused turn: returns :paused", ctx do
       {session, _} =
         start_session(ctx,
           agent_module: PauseAgent,
@@ -86,7 +86,7 @@ defmodule Omni.Session.NavigationTest do
       assert_receive {:session, ^session, :pause, _}, 1000
       assert Session.get_agent(session, :status) == :paused
 
-      assert {:error, :not_idle} = Session.navigate(session, 1)
+      assert {:error, :paused} = Session.navigate(session, 1)
     end
   end
 

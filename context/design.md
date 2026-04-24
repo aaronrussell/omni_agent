@@ -118,7 +118,7 @@ Public state (`lib/omni/agent/state.ex`):
   tools:    [Omni.Tool.t()],
   opts:     keyword(),
   private:  map(),
-  status:   :idle | :running | :paused,
+  status:   :idle | :busy | :paused,
   step:     non_neg_integer()
 }
 ```
@@ -267,8 +267,9 @@ Start options of note:
 
 `set_state` accepts `:model | :system | :messages | :tools | :opts`.
 Not `:private` (callback-owned), not `:status` / `:step` (framework).
-All values replace — there is no merge. Returns `{:error, :running}`
-if not idle, `{:error, :invalid_messages}` on invariant violation,
+All values replace — there is no merge. Returns `{:error, status}`
+with the current status (`:busy` or `:paused`) if not idle,
+`{:error, :invalid_messages}` on invariant violation,
 `{:error, {:model_not_found, ref}}` if a model can't resolve.
 
 There is no `regenerate/1` primitive — callers do `set_state(:messages,
@@ -301,7 +302,7 @@ for cleanup on death.
 :cancelled     %Response{stop_reason: :cancelled}   # cancel/1 invoked; turn_messages discarded
 :error         reason                               # handle_error returned :stop; turn_messages discarded
 :state         %State{}                             # set_state mutation applied
-:status        :idle | :running | :paused           # lifecycle phase changed
+:status        :idle | :busy | :paused              # lifecycle phase changed
 ```
 
 **Key contracts:**
@@ -365,7 +366,7 @@ Subscribers see `:status :paused` before `:pause`.
 
 ### 4.9 Steering (prompt queuing)
 
-A `prompt/3` call while `:running` or `:paused` does not error — it
+A `prompt/3` call while `:busy` or `:paused` does not error — it
 stages the content as the next turn's prompt. At the upcoming `:turn`
 event:
 
@@ -405,7 +406,7 @@ turn messages into the tree.
   subscribers:          MapSet.t(pid()),   # everyone who receives events
   controllers:          MapSet.t(pid()),   # subset: keeps the session alive
   monitors:             %{reference => pid()},
-  agent_status:         :idle | :running | :paused,   # cached from :status events
+  agent_status:         :idle | :busy | :paused,      # cached from :status events
   idle_shutdown_after:  non_neg_integer() | nil,
   shutdown_timer:       reference() | nil,
   last_persisted_state: map() | nil,       # change-detection scaffold
@@ -575,7 +576,8 @@ listen on `:turn`; those needing "tree structure changed" listen on
 
 ### 5.7 Navigation and branching
 
-All idle-only — returns `{:error, :not_idle}` when a turn is in flight.
+All idle-only — returns `{:error, status}` with the current status
+(`:busy` or `:paused`) when a turn is in flight.
 
 **`navigate/2`.** Walks parent pointers from `node_id` back to root,
 sets cursors for every parent → child pair along that path, resyncs
@@ -594,8 +596,8 @@ legal arity:
 | `branch(session, assistant_id, content)` | assistant | Extend from this assistant with a new user `content` — "edit the next user message." |
 | `branch(session, nil, content)` | — | New disjoint root. Atomic `navigate(nil) + prompt(content)`. |
 
-Errors: `:not_user_node`, `:not_assistant_node`, `:not_found`,
-`:not_idle`.
+Errors: `:not_user_node`, `:not_assistant_node`, `:not_found`, or the
+current status atom (`:busy`, `:paused`) if not idle.
 
 **Regen mechanics** (`branch/2`):
 

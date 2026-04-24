@@ -74,7 +74,7 @@ defmodule Omni.Session.IdleShutdownTest do
       assert Process.alive?(session)
     end
 
-    test "agent going :running cancels a pending shutdown", ctx do
+    test "agent going :busy cancels a pending shutdown", ctx do
       {session, _} = start_session(ctx, subscribe: true, idle_shutdown_after: 500)
 
       # Drop controllers to 0 to arm the timer.
@@ -84,11 +84,11 @@ defmodule Omni.Session.IdleShutdownTest do
       # Re-subscribe as observer so we receive the :status event but aren't a
       # controller (which would also cancel the timer).
       {:ok, _} = Session.subscribe(session, mode: :observer)
-      # Prompt → status goes :running → timer cancelled.
+      # Prompt → status goes :busy → timer cancelled.
       :ok = Session.prompt(session, "Hello!")
-      assert_receive {:session, ^session, :status, :running}, 500
+      assert_receive {:session, ^session, :status, :busy}, 500
 
-      # The running status should have cancelled the timer.
+      # The busy status should have cancelled the timer.
       refute :sys.get_state(session).shutdown_timer
 
       # Let the turn complete (status → idle) and then verify the session
@@ -114,15 +114,15 @@ defmodule Omni.Session.IdleShutdownTest do
           idle_shutdown_after: 50
         )
 
-      # Prompt — the turn begins, status goes :running. Since the observer is
+      # Prompt — the turn begins, status goes :busy. Since the observer is
       # the only subscriber, controllers=0 throughout. Shutdown is only
       # evaluated on transitions that enter (controllers=0 ∧ idle), which
       # happens when the turn completes.
       :ok = Session.prompt(session, "Hello!")
       ref = Process.monitor(session)
 
-      assert_receive {:session, ^session, :status, :running}, 1000
-      # Session stays alive while running.
+      assert_receive {:session, ^session, :status, :busy}, 1000
+      # Session stays alive while busy.
       assert Process.alive?(session)
 
       # After the turn completes, the timer arms and fires.

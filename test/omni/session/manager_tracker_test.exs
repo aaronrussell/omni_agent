@@ -205,7 +205,7 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       Omni.Session.prompt(pid, "hi")
 
-      assert_receive {:manager, ^m, :session_status, %{id: "s1", status: :running}}, 500
+      assert_receive {:manager, ^m, :session_status, %{id: "s1", status: :busy}}, 500
       assert_receive {:manager, ^m, :session_status, %{id: "s1", status: :idle}}, 2000
     end
 

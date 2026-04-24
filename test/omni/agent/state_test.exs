@@ -62,7 +62,7 @@ defmodule Omni.Agent.StateTest do
 
     test "rejects invalid keys" do
       {:ok, agent} = start_agent()
-      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, status: :running)
+      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, status: :busy)
     end
 
     test "rejects removed keys" do
@@ -95,7 +95,7 @@ defmodule Omni.Agent.StateTest do
       assert Agent.get_state(agent, :messages) == []
     end
 
-    test "returns error when running" do
+    test "returns error when busy" do
       stub_name = unique_stub_name()
       stub_slow(stub_name, @text_fixture)
 
@@ -107,8 +107,8 @@ defmodule Omni.Agent.StateTest do
         )
 
       :ok = Agent.prompt(agent, "Hello!")
-      assert_receive {:agent, ^agent, :status, :running}, 1000
-      assert {:error, :running} = Agent.set_state(agent, system: "new")
+      assert_receive {:agent, ^agent, :status, :busy}, 1000
+      assert {:error, :busy} = Agent.set_state(agent, system: "new")
       Agent.cancel(agent)
       _events = collect_events(agent, 2000)
     end
@@ -135,7 +135,7 @@ defmodule Omni.Agent.StateTest do
 
     test "rejects non-settable field status" do
       {:ok, agent} = start_agent()
-      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, :status, :running)
+      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, :status, :busy)
     end
 
     test "rejects non-settable field private" do
@@ -243,7 +243,7 @@ defmodule Omni.Agent.StateTest do
       events = collect_events(agent)
       assert {:pause, {:authorize, %ToolUse{}}} = List.last(events)
 
-      assert {:error, :running} = Agent.set_state(agent, system: "new")
+      assert {:error, :paused} = Agent.set_state(agent, system: "new")
 
       # Clean up
       Agent.cancel(agent)

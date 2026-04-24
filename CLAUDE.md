@@ -77,7 +77,7 @@ lib/omni/
 - **Turn** = one prompt-to-stop cycle. **Segment** = one natural stop
   within a turn (at `:turn {:continue, _}` or `:turn {:stop, _}`).
   **Step** = one LLM request-response.
-- Agent statuses: `:idle`, `:running`, `:paused`. Status determines
+- Agent statuses: `:idle`, `:busy`, `:paused`. Status determines
   which API calls are valid. Navigation and branching on Session are
   **idle-only**; `prompt/3` is not.
 
@@ -155,10 +155,11 @@ halt Session; they only emit `:store {:error, _, _}`.
 - **Keep changes scoped to the layer.** If a refactor seems to need a
   change to Agent for something Manager wants, ask first — we worked
   hard to keep layering one-directional.
-- **Match existing error shapes.** `{:error, :not_idle}`, `{:error,
-  :invalid_messages}`, `{:error, :already_exists}`, `{:error,
-  {:invalid_opt, key}}`, etc. — don't invent new shapes without a
-  reason.
+- **Match existing error shapes.** `{:error, :busy}`, `{:error,
+  :paused}`, `{:error, :invalid_messages}`, `{:error, :already_exists}`,
+  `{:error, {:invalid_opt, key}}`, etc. — don't invent new shapes
+  without a reason. Status-gated ops return the current status atom as
+  their reason.
 
 ### Don't
 

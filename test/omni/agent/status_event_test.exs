@@ -2,17 +2,17 @@ defmodule Omni.Agent.StatusEventTest do
   use Omni.Agent.AgentCase, async: true
 
   describe ":status event — transitions" do
-    test "fires :running when a turn starts and :idle when it stops" do
+    test "fires :busy when a turn starts and :idle when it stops" do
       {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
 
       statuses = for {:status, s} <- events, do: s
-      assert statuses == [:running, :idle]
+      assert statuses == [:busy, :idle]
     end
 
-    test ":status :running precedes the :message user event at turn start" do
+    test ":status :busy precedes the :message user event at turn start" do
       {:ok, agent} = start_agent()
 
       :ok = Agent.prompt(agent, "Hello!")
@@ -30,7 +30,7 @@ defmodule Omni.Agent.StatusEventTest do
         |> Enum.filter(&(&1 in [:message, :step, :turn] or match?({:status, _}, &1)))
 
       assert shape == [
-               {:status, :running},
+               {:status, :busy},
                :message,
                :message,
                :step,
@@ -48,7 +48,7 @@ defmodule Omni.Agent.StatusEventTest do
       assert_receive {:agent, ^agent, :turn, {:stop, _}}, 1000
     end
 
-    test "fires :idle on cancel during a running turn" do
+    test "fires :idle on cancel during a busy turn" do
       stub_name = unique_stub_name()
       stub_slow(stub_name, @text_fixture, 500)
 
@@ -60,7 +60,7 @@ defmodule Omni.Agent.StatusEventTest do
         )
 
       :ok = Agent.prompt(agent, "Hello!")
-      assert_receive {:agent, ^agent, :status, :running}, 500
+      assert_receive {:agent, ^agent, :status, :busy}, 500
       Process.sleep(50)
       :ok = Agent.cancel(agent)
 
@@ -84,7 +84,7 @@ defmodule Omni.Agent.StatusEventTest do
       :ok = Agent.cancel(agent)
 
       events = collect_events(agent, 2000)
-      assert trace_statuses_and_terminal(events, :cancelled) == [:running, :idle, :cancelled]
+      assert trace_statuses_and_terminal(events, :cancelled) == [:busy, :idle, :cancelled]
     end
 
     test "fires :idle on error after handle_error/2 returns {:stop, _}" do
@@ -100,7 +100,7 @@ defmodule Omni.Agent.StatusEventTest do
 
       :ok = Agent.prompt(agent, "Hello!")
       events = collect_events(agent)
-      assert trace_statuses_and_terminal(events, :error) == [:running, :idle, :error]
+      assert trace_statuses_and_terminal(events, :error) == [:busy, :idle, :error]
     end
 
     test "fires :paused when handle_tool_use returns {:pause, _, _}" do
@@ -114,10 +114,10 @@ defmodule Omni.Agent.StatusEventTest do
 
       # Collect until :pause terminates collect_events.
       events = collect_events(agent)
-      assert trace_statuses_and_terminal(events, :pause) == [:running, :paused, :pause]
+      assert trace_statuses_and_terminal(events, :pause) == [:busy, :paused, :pause]
     end
 
-    test "fires :running on resume from paused, then :idle on turn end" do
+    test "fires :busy on resume from paused, then :idle on turn end" do
       {:ok, agent} =
         start_agent_with_module(PauseAgent,
           tools: [tool_with_handler()],
@@ -125,13 +125,13 @@ defmodule Omni.Agent.StatusEventTest do
         )
 
       :ok = Agent.prompt(agent, "What's the weather?")
-      assert_receive {:agent, ^agent, :status, :running}, 1000
+      assert_receive {:agent, ^agent, :status, :busy}, 1000
       assert_receive {:agent, ^agent, :status, :paused}, 1000
       assert_receive {:agent, ^agent, :pause, _}, 1000
 
       :ok = Agent.resume(agent, :execute)
 
-      assert_receive {:agent, ^agent, :status, :running}, 1000
+      assert_receive {:agent, ^agent, :status, :busy}, 1000
       assert_receive {:agent, ^agent, :status, :idle}, 2000
       assert_receive {:agent, ^agent, :turn, {:stop, _}}, 1000
     end
@@ -166,7 +166,7 @@ defmodule Omni.Agent.StatusEventTest do
   end
 
   # Returns a flat list of status payloads and the terminal event tag in
-  # the order they appear — e.g. [:running, :idle, :error].
+  # the order they appear — e.g. [:busy, :idle, :error].
   defp trace_statuses_and_terminal(events, terminal) do
     Enum.flat_map(events, fn
       {:status, s} -> [s]

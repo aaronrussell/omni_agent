@@ -64,9 +64,9 @@ defmodule Omni.Agent.PauseResumeTest do
       assert {:turn, {:stop, %Response{stop_reason: :stop}}} = List.last(events)
     end
 
-    test "resume when not paused returns {:error, :not_paused}" do
+    test "resume when idle returns {:error, :idle}" do
       {:ok, agent} = start_agent()
-      assert {:error, :not_paused} = Agent.resume(agent, :execute)
+      assert {:error, :idle} = Agent.resume(agent, :execute)
     end
 
     test "cancel while paused resets state" do

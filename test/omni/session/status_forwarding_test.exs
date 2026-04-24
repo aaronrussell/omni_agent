@@ -9,7 +9,7 @@ defmodule Omni.Session.StatusForwardingTest do
 
       :ok = Session.prompt(session, "Hello!")
 
-      assert_receive {:session, ^session, :status, :running}, 1000
+      assert_receive {:session, ^session, :status, :busy}, 1000
       assert_receive {:session, ^session, :status, :idle}, 2000
     end
 
@@ -24,7 +24,7 @@ defmodule Omni.Session.StatusForwardingTest do
 
       # And we saw both transitions in the session stream.
       statuses = for {:status, s} <- events, do: s
-      assert :running in statuses
+      assert :busy in statuses
       assert :idle in statuses
     end
   end

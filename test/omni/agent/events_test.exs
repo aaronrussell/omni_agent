@@ -306,7 +306,7 @@ defmodule Omni.Agent.EventsTest do
     test "does not fire on failed set_state/3 (:invalid_key)" do
       {:ok, agent} = start_agent()
 
-      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, :status, :running)
+      assert {:error, {:invalid_key, :status}} = Agent.set_state(agent, :status, :busy)
       refute_receive {:agent, ^agent, :state, _}, 100
     end
   end
