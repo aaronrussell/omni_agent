@@ -148,18 +148,18 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       {:ok, _pid} = Manager.create(m, id: "after", agent: minimal_agent(), subscribe: false)
 
-      refute_receive {:manager, ^m, :session_added, _}, 100
+      refute_receive {:manager, ^m, :opened, _}, 100
     end
   end
 
-  # ── :session_added ─────────────────────────────────────────────────
+  # ── :opened ─────────────────────────────────────────────────
 
-  describe ":session_added" do
+  describe ":opened" do
     test "fires on create", %{manager: m} do
       {:ok, []} = Manager.subscribe(m)
       {:ok, pid} = Manager.create(m, id: "added", agent: minimal_agent(), subscribe: false)
 
-      assert_receive {:manager, ^m, :session_added, entry}, 500
+      assert_receive {:manager, ^m, :opened, entry}, 500
       assert entry.id == "added"
       assert entry.pid == pid
       assert entry.status == :idle
@@ -178,7 +178,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _} = Manager.subscribe(m)
 
       {:ok, _pid, :started} = Manager.open(m, "reborn", agent: minimal_agent(), subscribe: false)
-      assert_receive {:manager, ^m, :session_added, %{id: "reborn"}}, 500
+      assert_receive {:manager, ^m, :opened, %{id: "reborn"}}, 500
     end
 
     test "does NOT fire on open :existing", %{manager: m} do
@@ -187,13 +187,13 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _} = Manager.subscribe(m)
 
       {:ok, _pid, :existing} = Manager.open(m, "live", subscribe: false)
-      refute_receive {:manager, ^m, :session_added, _}, 100
+      refute_receive {:manager, ^m, :opened, _}, 100
     end
   end
 
-  # ── :session_status ────────────────────────────────────────────────
+  # ── :status ────────────────────────────────────────────────
 
-  describe ":session_status" do
+  describe ":status" do
     test "fires on turn start and completion", %{manager: m, tmp_dir: _} do
       stub_name = unique_stub_name()
       stub_fixture(stub_name, @text_fixture)
@@ -205,8 +205,8 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       Omni.Session.prompt(pid, "hi")
 
-      assert_receive {:manager, ^m, :session_status, %{id: "s1", status: :busy}}, 500
-      assert_receive {:manager, ^m, :session_status, %{id: "s1", status: :idle}}, 2000
+      assert_receive {:manager, ^m, :status, %{id: "s1", status: :busy}}, 500
+      assert_receive {:manager, ^m, :status, %{id: "s1", status: :idle}}, 2000
     end
 
     test "list_open reflects the latest status", %{manager: m} do
@@ -218,15 +218,15 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _} = Manager.subscribe(m)
       Omni.Session.prompt(pid, "hi")
 
-      assert_receive {:manager, ^m, :session_status, %{status: :idle}}, 2000
+      assert_receive {:manager, ^m, :status, %{status: :idle}}, 2000
 
       assert [%{id: "s2", status: :idle}] = Manager.list_open(m)
     end
   end
 
-  # ── :session_title ─────────────────────────────────────────────────
+  # ── :title ─────────────────────────────────────────────────
 
-  describe ":session_title" do
+  describe ":title" do
     test "fires on set_title and updates the tracker entry", %{manager: m} do
       {:ok, pid} =
         Manager.create(m, id: "t1", title: "old", agent: minimal_agent(), subscribe: false)
@@ -235,21 +235,21 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       :ok = Omni.Session.set_title(pid, "new")
 
-      assert_receive {:manager, ^m, :session_title, %{id: "t1", title: "new"}}, 500
+      assert_receive {:manager, ^m, :title, %{id: "t1", title: "new"}}, 500
       assert [%{title: "new"}] = Manager.list_open(m)
     end
   end
 
-  # ── :session_removed ───────────────────────────────────────────────
+  # ── :closed ───────────────────────────────────────────────
 
-  describe ":session_removed" do
+  describe ":closed" do
     test "fires on close", %{manager: m} do
       {:ok, _} = Manager.create(m, id: "c1", agent: minimal_agent(), subscribe: false)
 
       {:ok, _} = Manager.subscribe(m)
       :ok = Manager.close(m, "c1")
 
-      assert_receive {:manager, ^m, :session_removed, %{id: "c1"}}, 500
+      assert_receive {:manager, ^m, :closed, %{id: "c1"}}, 500
       assert Manager.list_open(m) == []
     end
 
@@ -259,7 +259,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _} = Manager.subscribe(m)
       :ok = Manager.delete(m, "d1")
 
-      assert_receive {:manager, ^m, :session_removed, %{id: "d1"}}, 500
+      assert_receive {:manager, ^m, :closed, %{id: "d1"}}, 500
     end
 
     @tag :capture_log
@@ -269,7 +269,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _} = Manager.subscribe(m)
       Process.exit(pid, :kill)
 
-      assert_receive {:manager, ^m, :session_removed, %{id: "crash"}}, 500
+      assert_receive {:manager, ^m, :closed, %{id: "crash"}}, 500
       assert Manager.list_open(m) == []
     end
 
@@ -283,7 +283,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       # agent idle arms the shutdown timer.
       :ok = Omni.Session.unsubscribe(pid)
 
-      assert_receive {:manager, ^m, :session_removed, %{id: "idle"}}, 500
+      assert_receive {:manager, ^m, :closed, %{id: "idle"}}, 500
     end
   end
 
@@ -382,7 +382,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       # Caller is no longer a subscriber — a new session emits nothing to us.
       flush_manager_events()
       {:ok, _} = Manager.create(m, id: "post", agent: minimal_agent(), subscribe: false)
-      refute_receive {:manager, ^m, :session_added, _}, 100
+      refute_receive {:manager, ^m, :opened, _}, 100
 
       # Re-subscribing works and sees the existing session.
       assert {:ok, entries} = Manager.subscribe(m)
@@ -406,12 +406,12 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _} = Manager.create(name_a, id: "in_a", agent: minimal_agent(), subscribe: false)
       {:ok, _} = Manager.create(name_b, id: "in_b", agent: minimal_agent(), subscribe: false)
 
-      assert_receive {:manager, ^name_a, :session_added, %{id: "in_a"}}, 500
-      assert_receive {:manager, ^name_b, :session_added, %{id: "in_b"}}, 500
+      assert_receive {:manager, ^name_a, :opened, %{id: "in_a"}}, 500
+      assert_receive {:manager, ^name_b, :opened, %{id: "in_b"}}, 500
 
       # No cross-talk.
-      refute_receive {:manager, ^name_a, :session_added, %{id: "in_b"}}, 100
-      refute_receive {:manager, ^name_b, :session_added, %{id: "in_a"}}, 100
+      refute_receive {:manager, ^name_a, :opened, %{id: "in_b"}}, 100
+      refute_receive {:manager, ^name_b, :opened, %{id: "in_a"}}, 100
     end
   end
 end

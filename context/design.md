@@ -987,38 +987,37 @@ false`) that:
 1. Observes every running session as `:observer` (lifetime-neutral —
    does not pin any session open).
 2. Maintains `%{id => %{id, title, status, pid}}`.
-3. Fans out `:session_added` / `:session_status` / `:session_title` /
-   `:session_removed` to Manager-level subscribers.
+3. Fans out `:opened` / `:status` / `:title` / `:closed` to
+   Manager-level subscribers.
 
 **Hand-off.** `Manager.create/open` calls `Tracker.add(id, pid)`
 synchronously before returning the pid. Every pid a caller sees is
 already tracked. On the `:existing` branch, `add` is idempotent —
-no duplicate `:session_added`.
+no duplicate `:opened`.
 
 **Recovery.** On Tracker crash and supervised restart, the new Tracker
 enumerates the Manager's Registry and re-observes each running session
-silently (no `:session_added` for rebuilds). Manager-level subscribers
+silently (no `:opened` for rebuilds). Manager-level subscribers
 die with the old Tracker pid and must re-subscribe — documented as
 accepted behaviour.
 
 ### 7.6 Manager-level events
 
 ```
-{:manager, manager_module, :session_added,   %{id, title, status, pid}}
-{:manager, manager_module, :session_status,  %{id, status}}
-{:manager, manager_module, :session_title,   %{id, title}}
-{:manager, manager_module, :session_removed, %{id}}
+{:manager, manager_module, :opened, %{id, title, status, pid}}
+{:manager, manager_module, :status, %{id, status}}
+{:manager, manager_module, :title,  %{id, title}}
+{:manager, manager_module, :closed, %{id}}
 ```
 
 The second element is the Manager module atom (not the Tracker pid) —
 what the caller already holds, pattern-matchable at compile time, and
 it naturally distinguishes events across multiple Managers.
 
-- `:session_added` fires after `Tracker.add` returns. Suppressed on
+- `:opened` fires after `Tracker.add` returns. Suppressed on
   `open :existing` (no state change).
-- `:session_status` / `:session_title` forward underlying Session
-  transitions.
-- `:session_removed` fires on DOWN regardless of cause (close, delete,
+- `:status` / `:title` forward underlying Session transitions.
+- `:closed` fires on DOWN regardless of cause (close, delete,
   crash, idle-shutdown).
 
 No cross-session ordering guarantees — events from different sessions

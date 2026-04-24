@@ -5,8 +5,8 @@ defmodule Omni.Session.Manager.Tracker do
   # `Omni.Session.Manager`. Subscribes to each session as `:observer`
   # (so it does not pin the session's lifetime) and maintains a
   # `%{id => %{id, title, status, pid}}` map. Fans out
-  # `:session_added` / `:session_status` / `:session_title` /
-  # `:session_removed` events to Manager-level subscribers.
+  # `:opened` / `:status` / `:title` / `:closed` events to
+  # Manager-level subscribers.
   #
   # Internal to the Manager. Callers go through
   # `Omni.Session.Manager.list_open/1` and
@@ -59,7 +59,7 @@ defmodule Omni.Session.Manager.Tracker do
     # On a normal (fresh) start the registry is empty and this is a
     # no-op. On a Tracker restart under the Manager supervisor, the
     # sessions the previous Tracker was watching are still running and
-    # registered — re-observe them silently (no :session_added fires,
+    # registered — re-observe them silently (no :opened fires,
     # since Manager-level subscribers died with the previous Tracker).
     entries =
       try do
@@ -114,7 +114,7 @@ defmodule Omni.Session.Manager.Tracker do
 
       id ->
         state = update_entry(state, id, fn entry -> %{entry | status: status} end)
-        broadcast(state, :session_status, %{id: id, status: status})
+        broadcast(state, :status, %{id: id, status: status})
         {:noreply, state}
     end
   end
@@ -126,7 +126,7 @@ defmodule Omni.Session.Manager.Tracker do
 
       id ->
         state = update_entry(state, id, fn entry -> %{entry | title: title} end)
-        broadcast(state, :session_title, %{id: id, title: title})
+        broadcast(state, :title, %{id: id, title: title})
         {:noreply, state}
     end
   end
@@ -160,7 +160,7 @@ defmodule Omni.Session.Manager.Tracker do
   # Monitor + observer-subscribe a new session. Returns state unchanged
   # if the session has already died (monitor delivered DOWN or subscribe
   # exited noproc). On success inserts an entry and — when `emit?` is
-  # true — broadcasts `:session_added`.
+  # true — broadcasts `:opened`.
   defp track_new(state, id, pid, emit?) do
     ref = Process.monitor(pid)
 
@@ -180,7 +180,7 @@ defmodule Omni.Session.Manager.Tracker do
             monitors: Map.put(state.monitors, ref, {:session, id})
         }
 
-        if emit?, do: broadcast(state, :session_added, entry)
+        if emit?, do: broadcast(state, :opened, entry)
         state
 
       :error ->
@@ -207,7 +207,7 @@ defmodule Omni.Session.Manager.Tracker do
             pid_to_id: Map.delete(state.pid_to_id, pid)
         }
 
-        broadcast(state, :session_removed, %{id: id})
+        broadcast(state, :closed, %{id: id})
         state
     end
   end

@@ -36,8 +36,8 @@ tested, and a suggested approach. Pick any and run with it.
 
 ### Tracker hand-off ordering (observable)
 **File:** new test in `test/omni/session/manager_tracker_test.exs`.
-**Invariant:** `context/design.md` § 7.5 (Tracker hand-off) — `Manager.create/2` and `Manager.open/3` synchronously hand off to `Tracker.add/3` before returning. `list_open/1` called immediately after `create/2` must include the new entry; a subscriber that subscribes *before* `create/2` must see `:session_added`.
-**Approach:** Two tests. (1) `Manager.create(...)` → immediately call `list_open(m)` and assert the new id is present (no `eventually`). (2) `subscribe` → `create` → `assert_receive :session_added` with a small timeout. The existing `list_open` tests use `eventually`, which masks a broken hand-off.
+**Invariant:** `context/design.md` § 7.5 (Tracker hand-off) — `Manager.create/2` and `Manager.open/3` synchronously hand off to `Tracker.add/3` before returning. `list_open/1` called immediately after `create/2` must include the new entry; a subscriber that subscribes *before* `create/2` must see `:opened`.
+**Approach:** Two tests. (1) `Manager.create(...)` → immediately call `list_open(m)` and assert the new id is present (no `eventually`). (2) `subscribe` → `create` → `assert_receive :opened` with a small timeout. The existing `list_open` tests use `eventually`, which masks a broken hand-off.
 
 ---
 
@@ -99,7 +99,7 @@ tested, and a suggested approach. Pick any and run with it.
 **File:** `test/omni/session/manager_test.exs`.
 **Gap:** Only `:title` is tested. The design lists `:agent`, `:title`, `:idle_shutdown_after`, `:subscribers` as dropped. Add a sweeping test that passes all four and asserts none take effect on the returned session.
 
-### Manager cleanup paths fire exactly one `:session_removed`
+### Manager cleanup paths fire exactly one `:closed`
 **File:** `test/omni/session/manager_tracker_test.exs`.
 **Gap:** Each cleanup path (close, delete, crash, idle-shutdown) is tested in isolation; no test asserts a race (e.g. close + crash simultaneously) doesn't double-emit.
 
@@ -126,7 +126,7 @@ These were deferred from Pattern C because they need new fixtures or a structura
 ### `manager_test.exs` delete ordering
 **File:** `test/omni/session/manager_test.exs` `delete/2` describe.
 **Issue:** Test asserts session is stopped and store entry is gone; doesn't assert ordering. If `delete` were re-implemented as delete-then-stop, test would still pass.
-**Approach:** Subscribe to Manager events, call `delete/2`, assert `:session_removed` arrives *before* `Store.exists?` returns `false` — or capture the order via monitoring the session pid's DOWN vs the Failing store's `delete` callback.
+**Approach:** Subscribe to Manager events, call `delete/2`, assert `:closed` arrives *before* `Store.exists?` returns `false` — or capture the order via monitoring the session pid's DOWN vs the Failing store's `delete` callback.
 
 ---
 
@@ -138,7 +138,7 @@ These were deferred from Pattern C because they need new fixtures or a structura
 - `test/omni/session/manager_tracker_test.exs` — `subscribers` MapSet checks (at least two tests reach into `:sys.get_state(tracker).subscribers`).
 
 **Issue:** Tests lock in the internal data structure. An ETS-based or schema-change refactor would break the tests without breaking the contract.
-**Approach:** Replace with event-based assertions — e.g. for subscriber idempotency, subscribe twice and assert exactly one `:session_added` arrives when a session is created; for cleanup on subscriber death, spawn a subscriber that dies, then create a session and assert the dead pid does *not* receive the event.
+**Approach:** Replace with event-based assertions — e.g. for subscriber idempotency, subscribe twice and assert exactly one `:opened` arrives when a session is created; for cleanup on subscriber death, spawn a subscriber that dies, then create a session and assert the dead pid does *not* receive the event.
 
 ### Agent error tests assume `step_task` is set
 **File:** `test/omni/agent/error_test.exs:65-165` (three tests).

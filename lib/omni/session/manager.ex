@@ -47,10 +47,10 @@ defmodule Omni.Session.Manager do
   entry is `%{id, title, status, pid}`. `subscribe/1` atomically returns
   the same snapshot and starts streaming live events to the caller:
 
-      {:manager, MyApp.Sessions, :session_added,   %{id, title, status, pid}}
-      {:manager, MyApp.Sessions, :session_status,  %{id, status}}
-      {:manager, MyApp.Sessions, :session_title,   %{id, title}}
-      {:manager, MyApp.Sessions, :session_removed, %{id}}
+      {:manager, MyApp.Sessions, :opened, %{id, title, status, pid}}
+      {:manager, MyApp.Sessions, :status, %{id, status}}
+      {:manager, MyApp.Sessions, :title,  %{id, title}}
+      {:manager, MyApp.Sessions, :closed, %{id}}
 
   The second element is the Manager module — what the caller already
   holds — so subscribers watching multiple Managers route events by
@@ -321,7 +321,7 @@ defmodule Omni.Session.Manager do
         {:error, {:already_started, pid}} ->
           # Subscribe caller as controller before Tracker.add so the session
           # is pinned against idle-shutdown before the Tracker emits
-          # :session_added — closes the timer race and the transient
+          # :opened — closes the timer race and the transient
           # no-controller window visible to Manager-level subscribers.
           :ok = subscribe_caller_on_existing(pid, caller, opts)
           :ok = Tracker.add(tracker_name(manager), id, pid)
@@ -406,10 +406,10 @@ defmodule Omni.Session.Manager do
   Returns an atomic snapshot of currently-running sessions. After the
   call returns, the caller receives messages of shape:
 
-      {:manager, manager_module, :session_added,   %{id, title, status, pid}}
-      {:manager, manager_module, :session_status,  %{id, status}}
-      {:manager, manager_module, :session_title,   %{id, title}}
-      {:manager, manager_module, :session_removed, %{id}}
+      {:manager, manager_module, :opened, %{id, title, status, pid}}
+      {:manager, manager_module, :status, %{id, status}}
+      {:manager, manager_module, :title,  %{id, title}}
+      {:manager, manager_module, :closed, %{id}}
 
   The second element is the Manager module — the same atom the caller
   passed in — so a subscriber watching multiple Managers can route
