@@ -46,6 +46,13 @@ defmodule Omni.Session.PubsubTest do
         assert_receive {^collector, :turn_complete}, 2000
       end
 
+      # Drain any trailing post-:turn events (:tree, :store) into every
+      # collector's mailbox before :dump lands. A synchronous call forces
+      # Session to finish the in-flight :turn handle_info (where those
+      # broadcasts happen) before replying, and local sends are delivered
+      # to the mailbox before the call returns.
+      _ = Session.get_snapshot(session)
+
       # Tell each collector to dump its event types.
       for collector <- collectors, do: send(collector, :dump)
 
