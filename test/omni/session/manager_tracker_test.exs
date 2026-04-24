@@ -177,7 +177,7 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       {:ok, _} = Manager.subscribe(m)
 
-      {:ok, :started, _pid} = Manager.open(m, "reborn", agent: minimal_agent(), subscribe: false)
+      {:ok, _pid, :started} = Manager.open(m, "reborn", agent: minimal_agent(), subscribe: false)
       assert_receive {:manager, ^m, :session_added, %{id: "reborn"}}, 500
     end
 
@@ -186,7 +186,7 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       {:ok, _} = Manager.subscribe(m)
 
-      {:ok, :existing, _pid} = Manager.open(m, "live", subscribe: false)
+      {:ok, _pid, :existing} = Manager.open(m, "live", subscribe: false)
       refute_receive {:manager, ^m, :session_added, _}, 100
     end
   end

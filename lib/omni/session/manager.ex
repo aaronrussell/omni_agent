@@ -20,7 +20,7 @@ defmodule Omni.Session.Manager do
   Call sites go through the `use`-generated shorthand:
 
       {:ok, pid}             = MyApp.Sessions.create(agent: [model: {:anthropic, "claude-sonnet-4-5"}])
-      {:ok, :started, pid}   = MyApp.Sessions.open("abc-123")
+      {:ok, pid, :started}   = MyApp.Sessions.open("abc-123")
       :ok                    = MyApp.Sessions.close("abc-123")
       {:ok, sessions}        = MyApp.Sessions.list(limit: 50)
 
@@ -73,8 +73,8 @@ defmodule Omni.Session.Manager do
   `open/3` tells you whether the Manager actually started the session or
   attached to an already-running one:
 
-      {:ok, :started, pid}   # Manager started the process; opts applied
-      {:ok, :existing, pid}  # process was already up; opts silently dropped
+      {:ok, pid, :started}   # Manager started the process; opts applied
+      {:ok, pid, :existing}  # process was already up; opts silently dropped
 
   On the `:existing` branch, start-time opts (`:agent`, `:title`,
   `:idle_shutdown_after`, `:subscribers`) are dropped because mutating a
@@ -287,12 +287,12 @@ defmodule Omni.Session.Manager do
   @doc """
   Returns a pid for the session with the given id.
 
-  The middle element of the return tuple tells you what happened:
+  The trailing atom tells you what happened:
 
-    * `{:ok, :started, pid}` — session wasn't running; Manager loaded it
+    * `{:ok, pid, :started}` — session wasn't running; Manager loaded it
       from the store, and start-time opts (`:agent`, `:title`,
       `:idle_shutdown_after`, `:subscribers`) were applied.
-    * `{:ok, :existing, pid}` — session was already running. Start-time
+    * `{:ok, pid, :existing}` — session was already running. Start-time
       opts are silently dropped (`:subscribe` still applies).
 
   Returns `{:error, :not_found}` when no session with the id exists in
@@ -302,7 +302,7 @@ defmodule Omni.Session.Manager do
   with `subscribe: false`.
   """
   @spec open(manager(), id(), keyword()) ::
-          {:ok, :started | :existing, pid()}
+          {:ok, pid(), :started | :existing}
           | {:error, :not_found}
           | {:error, {:invalid_opt, atom()}}
           | {:error, term()}
@@ -316,7 +316,7 @@ defmodule Omni.Session.Manager do
       case start_session(manager, id, session_opts, caller) do
         {:ok, pid} ->
           :ok = Tracker.add(tracker_name(manager), id, pid)
-          {:ok, :started, pid}
+          {:ok, pid, :started}
 
         {:error, {:already_started, pid}} ->
           # Subscribe caller as controller before Tracker.add so the session
@@ -325,7 +325,7 @@ defmodule Omni.Session.Manager do
           # no-controller window visible to Manager-level subscribers.
           :ok = subscribe_caller_on_existing(pid, caller, opts)
           :ok = Tracker.add(tracker_name(manager), id, pid)
-          {:ok, :existing, pid}
+          {:ok, pid, :existing}
 
         {:error, reason} ->
           {:error, reason}

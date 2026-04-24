@@ -249,7 +249,7 @@ Manage sessions by id:
 )
 
 # Load existing session
-{:ok, _, pid}  = MyApp.Sessions.open("abc-123")
+{:ok, pid, _}  = MyApp.Sessions.open("abc-123")
 
 # Stop the process, keep the store
 :ok = MyApp.Sessions.close("abc-123")
@@ -283,7 +283,7 @@ events without an explicit subscribe call:
 
 ```elixir
 def mount(%{"id" => id}, _params, socket) do
-  {:ok, _, pid} = MyApp.Sessions.open(id)
+  {:ok, pid, _} = MyApp.Sessions.open(id)
   snapshot = Omni.Session.get_snapshot(pid)
 
   {:ok, assign(socket,

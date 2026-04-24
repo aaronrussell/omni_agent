@@ -227,7 +227,7 @@ defmodule Omni.Session.ManagerTest do
       # Independent check: the session is persisted.
       assert Omni.Session.Store.exists?(store, "abc")
 
-      assert {:ok, :started, pid} = Manager.open(m, "abc", agent: minimal_agent())
+      assert {:ok, pid, :started} = Manager.open(m, "abc", agent: minimal_agent())
       assert session_state(pid).id == "abc"
       assert Manager.whereis(m, "abc") == pid
     end
@@ -236,7 +236,7 @@ defmodule Omni.Session.ManagerTest do
       {:ok, pid1} =
         Manager.create(m, id: "live", agent: minimal_agent(), title: "original", subscribe: false)
 
-      assert {:ok, :existing, pid2} =
+      assert {:ok, pid2, :existing} =
                Manager.open(m, "live", agent: minimal_agent(), title: "would-be-new")
 
       assert pid1 == pid2
@@ -248,7 +248,7 @@ defmodule Omni.Session.ManagerTest do
       :ok = Omni.Session.set_title(tmp, "persist")
       :ok = Manager.close(m, "s")
 
-      {:ok, :started, pid} = Manager.open(m, "s", agent: minimal_agent())
+      {:ok, pid, :started} = Manager.open(m, "s", agent: minimal_agent())
 
       assert MapSet.member?(session_state(pid).controllers, self())
     end
@@ -256,7 +256,7 @@ defmodule Omni.Session.ManagerTest do
     test "subscribes caller as controller on :existing", %{manager: m} do
       {:ok, pid} = Manager.create(m, id: "e", agent: minimal_agent(), subscribe: false)
 
-      assert {:ok, :existing, ^pid} = Manager.open(m, "e")
+      assert {:ok, ^pid, :existing} = Manager.open(m, "e")
       assert MapSet.member?(session_state(pid).controllers, self())
     end
 
@@ -265,7 +265,7 @@ defmodule Omni.Session.ManagerTest do
       :ok = Omni.Session.set_title(tmp, "persist")
       :ok = Manager.close(m, "n")
 
-      {:ok, :started, pid} = Manager.open(m, "n", agent: minimal_agent(), subscribe: false)
+      {:ok, pid, :started} = Manager.open(m, "n", agent: minimal_agent(), subscribe: false)
 
       refute MapSet.member?(session_state(pid).controllers, self())
     end
@@ -273,7 +273,7 @@ defmodule Omni.Session.ManagerTest do
     test "subscribe: false honored on :existing", %{manager: m} do
       {:ok, pid} = Manager.create(m, id: "n2", agent: minimal_agent(), subscribe: false)
 
-      assert {:ok, :existing, ^pid} = Manager.open(m, "n2", subscribe: false)
+      assert {:ok, ^pid, :existing} = Manager.open(m, "n2", subscribe: false)
       refute MapSet.member?(session_state(pid).controllers, self())
     end
 

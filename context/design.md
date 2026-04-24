@@ -933,7 +933,7 @@ Manager.create(manager, opts \\ [])   :: {:ok, pid}
                                        | {:error, :already_exists}
                                        | {:error, {:invalid_opt, atom}}
                                        | {:error, term}
-Manager.open(manager, id, opts \\ []) :: {:ok, :started | :existing, pid}
+Manager.open(manager, id, opts \\ []) :: {:ok, pid, :started | :existing}
                                        | {:error, :not_found}
                                        | {:error, {:invalid_opt, atom}}
                                        | {:error, term}
