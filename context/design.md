@@ -873,7 +873,7 @@ children = [
 
 `use` generates `child_spec/1`, `start_link/1`, and shorthand
 delegates (`create/1`, `open/2`, `close/1`, `delete/1`, `whereis/1`,
-`list/1`, `list_running/0`, `subscribe/0`, `unsubscribe/0`).
+`list/1`, `list_open/0`, `subscribe/0`, `unsubscribe/0`).
 
 Apps wanting multiple Managers (multi-tenant isolation, per-workspace)
 define multiple modules. No single global "default" Manager.
@@ -943,7 +943,7 @@ Manager.delete(manager, id)           :: :ok | {:error, term}  # stop then Store
 # Discovery
 Manager.whereis(manager, id)          :: pid | nil             # Registry lookup
 Manager.list(manager, opts \\ [])     :: {:ok, [session_info]}  # → Store.list
-Manager.list_running(manager)         :: [entry]                # → Tracker
+Manager.list_open(manager)            :: [entry]                # → Tracker
 
 # Cross-session pub/sub
 Manager.subscribe(manager)            :: {:ok, [entry]}

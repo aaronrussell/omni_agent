@@ -65,14 +65,14 @@ defmodule Omni.Session.ManagerTrackerTest do
   # ── use macro ──────────────────────────────────────────────────────
 
   describe "use macro" do
-    test "generates list_running/0, subscribe/0, unsubscribe/0" do
+    test "generates list_open/0, subscribe/0, unsubscribe/0" do
       exported =
         UseMacroTrackerManager.__info__(:functions)
         |> MapSet.new()
 
       assert MapSet.subset?(
                MapSet.new([
-                 {:list_running, 0},
+                 {:list_open, 0},
                  {:subscribe, 0},
                  {:unsubscribe, 0}
                ]),
@@ -81,13 +81,13 @@ defmodule Omni.Session.ManagerTrackerTest do
     end
   end
 
-  # ── list_running/1 ─────────────────────────────────────────────────
+  # ── list_open/1 ─────────────────────────────────────────────────
 
-  describe "list_running/1" do
+  describe "list_open/1" do
     test "reports a freshly created session", %{manager: m} do
       {:ok, pid} = Manager.create(m, id: "a", agent: minimal_agent(), subscribe: false)
 
-      assert [entry] = Manager.list_running(m)
+      assert [entry] = Manager.list_open(m)
       assert entry.id == "a"
       assert entry.pid == pid
       assert entry.status == :idle
@@ -98,18 +98,18 @@ defmodule Omni.Session.ManagerTrackerTest do
       {:ok, _pid} =
         Manager.create(m, id: "t", title: "hello", agent: minimal_agent(), subscribe: false)
 
-      assert [%{id: "t", title: "hello"}] = Manager.list_running(m)
+      assert [%{id: "t", title: "hello"}] = Manager.list_open(m)
     end
 
     test "returns an empty list when no sessions are running", %{manager: m} do
-      assert Manager.list_running(m) == []
+      assert Manager.list_open(m) == []
     end
 
     test "reflects multiple sessions", %{manager: m} do
       {:ok, _} = Manager.create(m, id: "x", agent: minimal_agent(), subscribe: false)
       {:ok, _} = Manager.create(m, id: "y", agent: minimal_agent(), subscribe: false)
 
-      ids = Manager.list_running(m) |> Enum.map(& &1.id) |> Enum.sort()
+      ids = Manager.list_open(m) |> Enum.map(& &1.id) |> Enum.sort()
       assert ids == ["x", "y"]
     end
 
@@ -118,7 +118,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       :ok = Manager.close(m, "gone")
 
       assert wait_until(fn ->
-               if Manager.list_running(m) == [], do: :done, else: nil
+               if Manager.list_open(m) == [], do: :done, else: nil
              end) == :done
     end
   end
@@ -209,7 +209,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       assert_receive {:manager, ^m, :session_status, %{id: "s1", status: :idle}}, 2000
     end
 
-    test "list_running reflects the latest status", %{manager: m} do
+    test "list_open reflects the latest status", %{manager: m} do
       stub_name = unique_stub_name()
       stub_fixture(stub_name, @text_fixture)
 
@@ -220,7 +220,7 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       assert_receive {:manager, ^m, :session_status, %{status: :idle}}, 2000
 
-      assert [%{id: "s2", status: :idle}] = Manager.list_running(m)
+      assert [%{id: "s2", status: :idle}] = Manager.list_open(m)
     end
   end
 
@@ -236,7 +236,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       :ok = Omni.Session.set_title(pid, "new")
 
       assert_receive {:manager, ^m, :session_title, %{id: "t1", title: "new"}}, 500
-      assert [%{title: "new"}] = Manager.list_running(m)
+      assert [%{title: "new"}] = Manager.list_open(m)
     end
   end
 
@@ -250,7 +250,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       :ok = Manager.close(m, "c1")
 
       assert_receive {:manager, ^m, :session_removed, %{id: "c1"}}, 500
-      assert Manager.list_running(m) == []
+      assert Manager.list_open(m) == []
     end
 
     test "fires on delete", %{manager: m} do
@@ -270,7 +270,7 @@ defmodule Omni.Session.ManagerTrackerTest do
       Process.exit(pid, :kill)
 
       assert_receive {:manager, ^m, :session_removed, %{id: "crash"}}, 500
-      assert Manager.list_running(m) == []
+      assert Manager.list_open(m) == []
     end
 
     test "fires after idle-shutdown", %{manager: m} do
@@ -325,7 +325,7 @@ defmodule Omni.Session.ManagerTrackerTest do
   # ── Tracker crash and rebuild ──────────────────────────────────────
 
   describe "Tracker crash recovery" do
-    test "rebuilds list_running after restart", %{manager: m} do
+    test "rebuilds list_open after restart", %{manager: m} do
       {:ok, _} = Manager.create(m, id: "a", agent: minimal_agent(), subscribe: false)
       {:ok, _} = Manager.create(m, id: "b", agent: minimal_agent(), subscribe: false)
 
@@ -351,7 +351,7 @@ defmodule Omni.Session.ManagerTrackerTest do
 
       ids =
         wait_until(fn ->
-          case Manager.list_running(m) |> Enum.map(& &1.id) |> Enum.sort() do
+          case Manager.list_open(m) |> Enum.map(& &1.id) |> Enum.sort() do
             ["a", "b"] = ids -> ids
             _ -> nil
           end

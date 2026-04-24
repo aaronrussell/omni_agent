@@ -36,8 +36,8 @@ tested, and a suggested approach. Pick any and run with it.
 
 ### Tracker hand-off ordering (observable)
 **File:** new test in `test/omni/session/manager_tracker_test.exs`.
-**Invariant:** `context/design.md` § 7.5 (Tracker hand-off) — `Manager.create/2` and `Manager.open/3` synchronously hand off to `Tracker.add/3` before returning. `list_running/1` called immediately after `create/2` must include the new entry; a subscriber that subscribes *before* `create/2` must see `:session_added`.
-**Approach:** Two tests. (1) `Manager.create(...)` → immediately call `list_running(m)` and assert the new id is present (no `eventually`). (2) `subscribe` → `create` → `assert_receive :session_added` with a small timeout. The existing `list_running` tests use `eventually`, which masks a broken hand-off.
+**Invariant:** `context/design.md` § 7.5 (Tracker hand-off) — `Manager.create/2` and `Manager.open/3` synchronously hand off to `Tracker.add/3` before returning. `list_open/1` called immediately after `create/2` must include the new entry; a subscriber that subscribes *before* `create/2` must see `:session_added`.
+**Approach:** Two tests. (1) `Manager.create(...)` → immediately call `list_open(m)` and assert the new id is present (no `eventually`). (2) `subscribe` → `create` → `assert_receive :session_added` with a small timeout. The existing `list_open` tests use `eventually`, which masks a broken hand-off.
 
 ---
 

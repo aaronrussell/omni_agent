@@ -9,7 +9,7 @@ defmodule Omni.Session.Manager.Tracker do
   # `:session_removed` events to Manager-level subscribers.
   #
   # Internal to the Manager. Callers go through
-  # `Omni.Session.Manager.list_running/1` and
+  # `Omni.Session.Manager.list_open/1` and
   # `Omni.Session.Manager.subscribe/1` rather than calling this module
   # directly.
 
@@ -31,7 +31,7 @@ defmodule Omni.Session.Manager.Tracker do
   # Only `add/3` has a dedicated wrapper — it's a Manager-internal
   # hand-off with no equivalent on the Manager public API, and the name
   # carries intent worth keeping at the call site. Everything else
-  # (list_running, subscribe, unsubscribe) is a 1:1 mirror of Manager's
+  # (list_open, subscribe, unsubscribe) is a 1:1 mirror of Manager's
   # public API; Manager invokes those via `GenServer.call` directly.
 
   def start_link(opts) do
@@ -81,7 +81,7 @@ defmodule Omni.Session.Manager.Tracker do
     end
   end
 
-  def handle_call(:list_running, _from, state) do
+  def handle_call(:list_open, _from, state) do
     {:reply, Map.values(state.sessions), state}
   end
 

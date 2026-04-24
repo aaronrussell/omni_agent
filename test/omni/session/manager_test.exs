@@ -513,7 +513,7 @@ defmodule Omni.Session.ManagerTest do
              end)
 
       # Sessions are temporary children — none come back.
-      assert eventually(fn -> Manager.list_running(m) == [] end)
+      assert eventually(fn -> Manager.list_open(m) == [] end)
     end
 
     test "killing the DynSup takes down Tracker and sessions; Registry survives", %{
@@ -551,7 +551,7 @@ defmodule Omni.Session.ManagerTest do
              end)
 
       # Sessions are gone.
-      assert eventually(fn -> Manager.list_running(m) == [] end)
+      assert eventually(fn -> Manager.list_open(m) == [] end)
     end
 
     test "killing the Tracker leaves Registry, DynSup, and sessions untouched", %{manager: m} do
@@ -590,7 +590,7 @@ defmodule Omni.Session.ManagerTest do
 
       # And the new Tracker rebuilt its view from the Registry.
       assert eventually(fn ->
-               case Manager.list_running(m) do
+               case Manager.list_open(m) do
                  [%{id: "a", pid: ^pid_a}] -> true
                  _ -> false
                end

@@ -34,7 +34,7 @@ defmodule Omni.Session.Manager do
   Sessions live under the DynamicSupervisor with `restart: :temporary` —
   on crash they do not auto-restart. The Registry maps session ids to
   pids; on `close/2` or crash, entries are removed automatically. The
-  Tracker observes every running session and powers `list_running/1`
+  Tracker observes every running session and powers `list_open/1`
   plus the Manager-level `subscribe/1` feed.
 
   Running sessions outlive the caller that created them. The caller is
@@ -43,7 +43,7 @@ defmodule Omni.Session.Manager do
 
   ## Cross-session view
 
-  `list_running/1` returns a snapshot of all running sessions; each
+  `list_open/1` returns a snapshot of all running sessions; each
   entry is `%{id, title, status, pid}`. `subscribe/1` atomically returns
   the same snapshot and starts streaming live events to the caller:
 
@@ -94,7 +94,7 @@ defmodule Omni.Session.Manager do
   @type id :: Session.Store.session_id()
 
   @typedoc """
-  Per-session entry returned by `list_running/1` and `subscribe/1`.
+  Per-session entry returned by `list_open/1` and `subscribe/1`.
   """
   @type entry :: %{
           id: id(),
@@ -134,8 +134,8 @@ defmodule Omni.Session.Manager do
       def list(opts \\ []),
         do: Omni.Session.Manager.list(__MODULE__, opts)
 
-      def list_running,
-        do: Omni.Session.Manager.list_running(__MODULE__)
+      def list_open,
+        do: Omni.Session.Manager.list_open(__MODULE__)
 
       def subscribe,
         do: Omni.Session.Manager.subscribe(__MODULE__)
@@ -395,9 +395,9 @@ defmodule Omni.Session.Manager do
   running). The two are commonly composed to render an "all sessions
   with running indicator" view.
   """
-  @spec list_running(manager()) :: [entry()]
-  def list_running(manager) when is_atom(manager) do
-    GenServer.call(tracker_name(manager), :list_running)
+  @spec list_open(manager()) :: [entry()]
+  def list_open(manager) when is_atom(manager) do
+    GenServer.call(tracker_name(manager), :list_open)
   end
 
   @doc """

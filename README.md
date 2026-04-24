@@ -259,7 +259,7 @@ Manage sessions by id:
 
 # Index views
 {:ok, summaries} = MyApp.Sessions.list(limit: 50)   # store-backed
-running          = MyApp.Sessions.list_running()    # in-memory projection
+open             = MyApp.Sessions.list_open()       # in-memory projection
 ```
 
 Subscribe to a live cross-session feed for dashboards and session lists:
