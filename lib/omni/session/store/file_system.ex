@@ -25,9 +25,26 @@ defmodule Omni.Session.Store.FileSystem do
 
   ## Configuration
 
-  `:base_path` is required; the adapter raises `ArgumentError` if absent.
+    * `:base_path` — **required**. Absolute paths are used verbatim.
+      Relative paths require `:otp_app` (see below) and are resolved via
+      `Application.app_dir/2`.
+    * `:otp_app` — optional. When set together with a relative
+      `:base_path`, the adapter resolves the absolute base via
+      `Application.app_dir(otp_app, base_path)`. This is CWD-independent
+      and remains stable across the BEAM lifetime, unlike paths derived
+      from `File.cwd!/0` which can shift under code reloading or `cd`.
 
-      store = {Omni.Session.Store.FileSystem, base_path: "/var/data/sessions"}
+  Examples:
+
+      # Absolute — used as-is
+      {Omni.Session.Store.FileSystem, base_path: "/var/data/sessions"}
+
+      # Relative under :my_app's priv directory
+      {Omni.Session.Store.FileSystem, base_path: "priv/sessions", otp_app: :my_app}
+
+  Passing a relative `:base_path` without `:otp_app` raises
+  `ArgumentError` on first use — silent CWD-dependent storage is a
+  foot-gun the adapter refuses to enable.
 
   ## Encoding
 
@@ -130,11 +147,27 @@ defmodule Omni.Session.Store.FileSystem do
   defp base_path(cfg) do
     case Keyword.fetch(cfg, :base_path) do
       {:ok, path} ->
-        path
+        resolve_base_path(path, Keyword.get(cfg, :otp_app))
 
       :error ->
         raise ArgumentError,
               "#{inspect(__MODULE__)} requires a :base_path in its config"
+    end
+  end
+
+  defp resolve_base_path(path, otp_app) do
+    cond do
+      Path.type(path) == :absolute ->
+        path
+
+      is_atom(otp_app) and not is_nil(otp_app) ->
+        Application.app_dir(otp_app, path)
+
+      true ->
+        raise ArgumentError,
+              "#{inspect(__MODULE__)} :base_path #{inspect(path)} is relative; " <>
+                "either pass an absolute path or set :otp_app so the path can " <>
+                "be resolved via Application.app_dir/2"
     end
   end
 

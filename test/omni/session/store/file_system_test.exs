@@ -60,6 +60,46 @@ defmodule Omni.Session.Store.FileSystemTest do
     end
   end
 
+  describe ":otp_app option" do
+    test "resolves a relative :base_path via Application.app_dir/2" do
+      rel = "tmp/otp_app_test_#{System.unique_integer([:positive])}"
+      cfg = [base_path: rel, otp_app: :omni_agent]
+      expected = Application.app_dir(:omni_agent, rel)
+
+      on_exit(fn -> File.rm_rf!(expected) end)
+
+      tree = sample_tree()
+      assert :ok = FileSystem.save_tree(cfg, "s1", tree)
+      assert File.exists?(Path.join([expected, "s1", "session.json"]))
+
+      assert {:ok, loaded, _} = FileSystem.load(cfg, "s1")
+      assert loaded == tree
+    end
+
+    test "raises ArgumentError when :base_path is relative without :otp_app" do
+      cfg = [base_path: "tmp/no_otp_app"]
+
+      assert_raise ArgumentError, ~r/relative/, fn ->
+        FileSystem.save_tree(cfg, "s1", sample_tree())
+      end
+
+      assert_raise ArgumentError, ~r/relative/, fn ->
+        FileSystem.load(cfg, "s1")
+      end
+
+      assert_raise ArgumentError, ~r/relative/, fn ->
+        FileSystem.list(cfg)
+      end
+    end
+
+    test "absolute :base_path takes precedence over :otp_app", ctx do
+      cfg = [base_path: ctx.tmp_dir, otp_app: :omni_agent]
+
+      assert :ok = FileSystem.save_tree(cfg, "s1", sample_tree())
+      assert File.exists?(Path.join([ctx.tmp_dir, "s1", "session.json"]))
+    end
+  end
+
   describe "save_tree + load round-trip" do
     test "linear tree", ctx do
       tree = sample_tree()

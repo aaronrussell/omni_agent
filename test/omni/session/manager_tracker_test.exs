@@ -6,7 +6,7 @@ defmodule Omni.Session.ManagerTrackerTest do
   @moduletag :tmp_dir
 
   defmodule UseMacroTrackerManager do
-    use Omni.Session.Manager
+    use Omni.Session.Manager, otp_app: :omni_agent
   end
 
   setup ctx do

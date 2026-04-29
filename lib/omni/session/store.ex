@@ -17,41 +17,39 @@ defmodule Omni.Session.Store do
 
   ## Configuring a store once in an application
 
-  There is no global Application-env fallback — this keeps the library
-  opinion-free about *where* you keep your config. The idiomatic pattern
-  is a thin wrapper in your application that exposes the store tuple.
+  The recommended path is to use `Omni.Session.Manager` with `otp_app:`,
+  which reads the store from `Application.get_env/3` for you:
 
-  For static configuration, a module attribute is enough:
-
-      defmodule MyApp.Storage do
-        @store {Omni.Session.Store.FileSystem, base_path: "priv/sessions"}
-        def store, do: @store
+      defmodule MyApp.Sessions do
+        use Omni.Session.Manager, otp_app: :my_app
       end
-
-  When configuration varies per environment (common for test isolation),
-  read it from `config/*.exs`:
 
       # config/config.exs
-      config :my_app, :session_store,
-        {Omni.Session.Store.FileSystem, base_path: "priv/sessions"}
+      config :my_app, MyApp.Sessions,
+        store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions", otp_app: :my_app}
 
-      # config/test.exs
-      config :my_app, :session_store,
-        {Omni.Session.Store.FileSystem, base_path: "tmp/test_sessions"}
+      # everywhere a session is needed
+      MyApp.Sessions.create(agent: [...])
+      MyApp.Sessions.delete("abc-123")
 
-      # lib/my_app/storage.ex
+  When configuration varies per environment, override in `config/test.exs`
+  (etc.) using the same key.
+
+  ## Direct (non-Manager) usage
+
+  When sessions are started outside a Manager, the application owns the
+  store tuple. A module attribute is enough for static configuration:
+
       defmodule MyApp.Storage do
-        def store, do: Application.fetch_env!(:my_app, :session_store)
+        @store {Omni.Session.Store.FileSystem, base_path: "/var/data/sessions"}
+        def store, do: @store
       end
-
-  Then everywhere a store is needed:
 
       Omni.Session.start_link(store: MyApp.Storage.store(), new: id, agent: [...])
       Omni.Session.Store.delete(MyApp.Storage.store(), id)
 
-  This mirrors the `Ecto.Repo` pattern — each app owns a module that
-  knows the adapter and config; the rest of the code passes that module's
-  output around.
+  For environment-specific configuration without a Manager, read the
+  tuple from `Application.get_env/3` inside the wrapper.
 
   ## State categories
 

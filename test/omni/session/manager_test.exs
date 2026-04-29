@@ -6,11 +6,23 @@ defmodule Omni.Session.ManagerTest do
 
   @moduletag :tmp_dir
 
-  # Module used to exercise the `use Omni.Session.Manager` path. Only
-  # lives here — the other tests bypass the macro and call the
-  # `Manager.*` functions with an explicit name atom.
+  # Modules used to exercise the `use Omni.Session.Manager` path. Most
+  # tests bypass the macro and call the `Manager.*` functions with an
+  # explicit name atom; these are reserved for the use-macro coverage.
   defmodule UseMacroManager do
-    use Omni.Session.Manager
+    use Omni.Session.Manager, otp_app: :omni_agent
+  end
+
+  defmodule AppEnvManager do
+    use Omni.Session.Manager, otp_app: :omni_agent
+  end
+
+  defmodule OverrideManager do
+    use Omni.Session.Manager, otp_app: :omni_agent
+  end
+
+  defmodule NoStoreManager do
+    use Omni.Session.Manager, otp_app: :omni_agent
   end
 
   # Each test gets its own Manager instance, registered under a unique
@@ -63,6 +75,55 @@ defmodule Omni.Session.ManagerTest do
                ]),
                exported
              )
+    end
+
+    test "raises at compile time when :otp_app is missing" do
+      assert_raise ArgumentError, ~r/:otp_app/, fn ->
+        Code.compile_string("""
+        defmodule Elixir.Omni.Session.ManagerTest.NoOtpApp#{System.unique_integer([:positive])} do
+          use Omni.Session.Manager
+        end
+        """)
+      end
+    end
+  end
+
+  # ── use macro app-env config ───────────────────────────────────────
+
+  describe "use macro app-env config" do
+    test "starts from Application.get_env when no start-opts are passed", ctx do
+      store = {FileSystem, base_path: Path.join(ctx.tmp_dir, "app_env")}
+
+      Application.put_env(:omni_agent, AppEnvManager, store: store)
+      on_exit(fn -> Application.delete_env(:omni_agent, AppEnvManager) end)
+
+      start_supervised!(AppEnvManager)
+
+      {:ok, pid} = AppEnvManager.create(agent: minimal_agent(), subscribe: false)
+      assert session_state(pid).store == store
+    end
+
+    test "supervisor start-opts override app-env values", ctx do
+      app_store = {FileSystem, base_path: Path.join(ctx.tmp_dir, "from_app_env")}
+      override_store = {FileSystem, base_path: Path.join(ctx.tmp_dir, "from_start_opts")}
+
+      Application.put_env(:omni_agent, OverrideManager, store: app_store)
+      on_exit(fn -> Application.delete_env(:omni_agent, OverrideManager) end)
+
+      start_supervised!({OverrideManager, store: override_store})
+
+      {:ok, pid} = OverrideManager.create(agent: minimal_agent(), subscribe: false)
+      assert session_state(pid).store == override_store
+    end
+
+    test "fails to start when :store is configured nowhere" do
+      on_exit(fn -> Application.delete_env(:omni_agent, NoStoreManager) end)
+
+      Process.flag(:trap_exit, true)
+
+      assert {:error, reason} = NoStoreManager.start_link()
+      assert {%ArgumentError{message: msg}, _stack} = reason
+      assert msg =~ ":store"
     end
   end
 

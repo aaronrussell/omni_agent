@@ -4,17 +4,26 @@ defmodule Omni.Session.Manager do
   lifecycle management.
 
   The Manager is an app-level Supervisor. Apps define their own module
-  that `use`s it — following the `Ecto.Repo` convention — and drop that
-  module into a supervision tree:
+  that `use`s it — following the `Ecto.Repo` convention — naming the
+  host application via `otp_app:` and dropping the module into a
+  supervision tree:
 
       defmodule MyApp.Sessions do
-        use Omni.Session.Manager
+        use Omni.Session.Manager, otp_app: :my_app
       end
 
+      # config/config.exs
+      config :my_app, MyApp.Sessions,
+        store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions", otp_app: :my_app}
+
       # application.ex
+      children = [MyApp.Sessions]
+
+  Supervisor start-opts override app-env values when both are set, for
+  cases where a value must be computed at boot:
+
       children = [
-        {MyApp.Sessions,
-           store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions"}}
+        {MyApp.Sessions, store: dynamic_store()}
       ]
 
   Call sites go through the `use`-generated shorthand:
@@ -57,6 +66,10 @@ defmodule Omni.Session.Manager do
   pattern-matching.
 
   ## Configuration
+
+  Options resolve in this order (highest priority first): supervisor
+  start-opts → `Application.get_env(otp_app, ManagerModule, [])` → the
+  defaults below.
 
     * `:store` — **required**. `{module, keyword()}` — the store adapter
       tuple. Used by every session this Manager starts, and by `list/2`
@@ -108,13 +121,26 @@ defmodule Omni.Session.Manager do
 
   # ── use macro ──────────────────────────────────────────────────────
 
-  defmacro __using__(_opts) do
+  defmacro __using__(opts) do
+    otp_app =
+      case Keyword.fetch(opts, :otp_app) do
+        {:ok, app} when is_atom(app) and not is_nil(app) ->
+          app
+
+        _ ->
+          raise ArgumentError,
+                "use Omni.Session.Manager requires :otp_app, e.g. " <>
+                  "`use Omni.Session.Manager, otp_app: :my_app`"
+      end
+
     quote do
-      def child_spec(opts),
-        do: Omni.Session.Manager.child_spec([{:name, __MODULE__} | opts])
+      @otp_app unquote(otp_app)
+
+      def child_spec(opts \\ []),
+        do: Omni.Session.Manager.child_spec(merge_opts(opts))
 
       def start_link(opts \\ []),
-        do: Omni.Session.Manager.start_link([{:name, __MODULE__} | opts])
+        do: Omni.Session.Manager.start_link(merge_opts(opts))
 
       def create(opts \\ []),
         do: Omni.Session.Manager.create(__MODULE__, opts)
@@ -142,6 +168,13 @@ defmodule Omni.Session.Manager do
 
       def unsubscribe,
         do: Omni.Session.Manager.unsubscribe(__MODULE__)
+
+      defp merge_opts(start_opts) do
+        @otp_app
+        |> Application.get_env(__MODULE__, [])
+        |> Keyword.merge(start_opts)
+        |> Keyword.put(:name, __MODULE__)
+      end
     end
   end
 
