@@ -188,7 +188,7 @@ defmodule Omni.Session.BranchTest do
   end
 
   describe "cancelled edit (branch/3 with assistant target + content)" do
-    test "tree path remains on the assistant; no children appear", ctx do
+    test "rolls back to pre-branch tree; no children appear", ctx do
       {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
 
       # First turn seeds user:1 → assistant:2.
@@ -220,19 +220,22 @@ defmodule Omni.Session.BranchTest do
       _ = collect_session_events(session)
 
       tree = Session.get_tree(session)
-      # Per context/design.md § 5.7: on cancel, no tree mutation beyond
-      # the path change that `branch/3` did before prompting.
+      # Cancel rollback restores the pre-branch tree and extends to a
+      # tip — pre-branch was already at the [1, 2] tip, so extend is a
+      # no-op.
       assert tree.path == [1, 2]
       assert Tree.children(tree, 2) == []
       assert Tree.size(tree) == 2
-      # regen_source is a branch/2 (regen) concept; it must never be set
-      # for branch/3 (edit), cancelled or otherwise.
+      # Agent messages stay coherent with the restored tree.
+      assert Session.get_agent(session, :messages) == Tree.messages(tree)
+      # Both rollback flags are cleared.
       assert :sys.get_state(session).regen_source == nil
+      assert :sys.get_state(session).pre_branch_tree == nil
     end
   end
 
   describe "errored edit (branch/3 with assistant target + content)" do
-    test "tree path remains on the assistant; no children appear", ctx do
+    test "rolls back to pre-branch tree; no children appear", ctx do
       {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
 
       :ok = Session.prompt(session, "A")
@@ -252,12 +255,14 @@ defmodule Omni.Session.BranchTest do
       assert tree.path == [1, 2]
       assert Tree.children(tree, 2) == []
       assert Tree.size(tree) == 2
+      assert Session.get_agent(session, :messages) == Tree.messages(tree)
       assert :sys.get_state(session).regen_source == nil
+      assert :sys.get_state(session).pre_branch_tree == nil
     end
   end
 
   describe "cancelled regen" do
-    test "cancelling a regen clears regen_source", ctx do
+    test "cancelling a regen clears regen_source and restores pre-branch tree", ctx do
       {session, _} =
         start_session(ctx,
           agent_module: PauseAgent,
@@ -276,14 +281,201 @@ defmodule Omni.Session.BranchTest do
       :ok = Session.branch(session, 1)
       assert_receive {:session, ^session, :pause, _}, 1000
 
-      # regen_source is set during the in-flight regen.
+      # regen_source and pre_branch_tree are set during the in-flight
+      # regen. Tree path is on the user (node 1) until commit.
       assert :sys.get_state(session).regen_source == 1
+      assert %Tree{path: [1, 2]} = :sys.get_state(session).pre_branch_tree
 
       :ok = Session.cancel(session)
       assert_receive {:session, ^session, :cancelled, _}, 1000
+      _ = collect_session_events(session)
 
-      # After cancel, regen_source is cleared.
+      # Tree rolls back to the pre-branch state, agent messages match,
+      # both rollback flags are cleared.
+      tree = Session.get_tree(session)
+      assert tree.path == [1, 2]
+      assert Session.get_agent(session, :messages) == Tree.messages(tree)
       assert :sys.get_state(session).regen_source == nil
+      assert :sys.get_state(session).pre_branch_tree == nil
+    end
+  end
+
+  describe "errored regen" do
+    test "rolls back to pre-branch tree on error mid-regen", ctx do
+      {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
+
+      :ok = Session.prompt(session, "ask")
+      _ = collect_session_events(session)
+      # Pre-branch tree: [u1, a2].
+
+      # Next call 500s. The regen fires its prompt against this stub.
+      Req.Test.stub(stub_name, fn conn ->
+        Plug.Conn.send_resp(conn, 500, "Internal Server Error")
+      end)
+
+      :ok = Session.branch(session, 1)
+      events = collect_session_events(session)
+
+      assert Enum.any?(events, &match?({:error, _}, &1))
+
+      tree = Session.get_tree(session)
+      assert tree.path == [1, 2]
+      assert Tree.children(tree, 1) == [2]
+      assert Tree.size(tree) == 2
+      assert Session.get_agent(session, :messages) == Tree.messages(tree)
+      assert :sys.get_state(session).regen_source == nil
+      assert :sys.get_state(session).pre_branch_tree == nil
+    end
+  end
+
+  describe "cancelled branch from nil" do
+    test "rolls back to pre-branch path; no new root appears", ctx do
+      {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
+
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+      # Pre-branch tree: [u1, a2].
+
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        send(parent, {:llm_called, gate_ref, self()})
+
+        receive do
+          {:release, ^gate_ref} -> :ok
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
+
+      :ok = Session.branch(session, nil, "new root")
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
+
+      # During the in-flight branch, the path was cleared by the nil nav.
+      assert Session.get_tree(session).path == []
+
+      :ok = Session.cancel(session)
+      send(plug_pid, {:release, gate_ref})
+      _ = collect_session_events(session)
+
+      tree = Session.get_tree(session)
+      # Path restored, no new nodes appeared.
+      assert tree.path == [1, 2]
+      assert Tree.size(tree) == 2
+      assert Tree.roots(tree) == [1]
+      assert Session.get_agent(session, :messages) == Tree.messages(tree)
+      assert :sys.get_state(session).pre_branch_tree == nil
+    end
+  end
+
+  describe "cancel-rollback cursor preservation" do
+    test "branch + cancel + navigate from ancestor uses original cursors", ctx do
+      {session, stub_name} =
+        start_session(ctx,
+          new: "s1",
+          fixtures: [@text_fixture, @text_fixture, @text_fixture]
+        )
+
+      # Build tree [u1, a2] then a sibling branch [u1, a3] via regen.
+      :ok = Session.prompt(session, "ask")
+      _ = collect_session_events(session)
+      :ok = Session.branch(session, 1)
+      _ = collect_session_events(session)
+      # Cursor at u1 now points to a3 (the most-recently-committed branch).
+      assert Session.get_tree(session).cursors[1] == 3
+
+      # Now start an edit-branch from a3 but cancel it mid-flight.
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        send(parent, {:llm_called, gate_ref, self()})
+
+        receive do
+          {:release, ^gate_ref} -> :ok
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
+
+      :ok = Session.branch(session, 3, "edit a3")
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
+      :ok = Session.cancel(session)
+      send(plug_pid, {:release, gate_ref})
+      _ = collect_session_events(session)
+
+      # Cursors restored — u1 still points to a3, no in-flight branch
+      # leaks into navigation.
+      tree = Session.get_tree(session)
+      assert tree.cursors[1] == 3
+
+      # Navigate from u1 lands back on a3, not on any phantom child.
+      :ok = Session.navigate(session, 1)
+      assert Session.get_tree(session).path == [1, 3]
+    end
+  end
+
+  describe "cancel-rollback event order" do
+    test "emits :cancelled then :tree then :state", ctx do
+      {session, stub_name} = start_session(ctx, new: "s1", fixture: @text_fixture)
+
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        send(parent, {:llm_called, gate_ref, self()})
+
+        receive do
+          {:release, ^gate_ref} -> :ok
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
+
+      :ok = Session.branch(session, 2, "B")
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
+      :ok = Session.cancel(session)
+      send(plug_pid, {:release, gate_ref})
+
+      events = collect_session_events(session)
+
+      # Slice from :cancelled onward — the branch's own apply_navigation
+      # also emits :tree / :store / :state before the cancel, which we
+      # don't care about here.
+      tail =
+        events
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.drop_while(&(&1 != :cancelled))
+
+      tree_idx = Enum.find_index(tail, &(&1 == :tree))
+      store_idx = Enum.find_index(tail, &(&1 == :store))
+      state_idx = Enum.find_index(tail, &(&1 == :state))
+
+      assert tail != []
+      assert tree_idx != nil
+      assert store_idx != nil
+      assert state_idx != nil
+
+      # Documented event order: :cancelled → :tree → :store → :state.
+      assert hd(tail) == :cancelled
+      assert tree_idx < store_idx
+      assert store_idx < state_idx
     end
   end
 

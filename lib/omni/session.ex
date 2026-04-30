@@ -91,6 +91,13 @@ defmodule Omni.Session do
   All three operations are idle-only — they return `{:error, status}`
   with the current status (`:busy` or `:paused`) when a turn is in flight.
 
+  `navigate/2` always lands on a tip — after walking to the target it
+  follows cursors down to a leaf so the resulting state is ready for a
+  prompt. `branch/2,3` deliberately ends the in-flight window on a
+  non-tip node; if that turn is cancelled or errors, the tree rolls back
+  to its pre-branch state (also extended to a tip) — as if the branch
+  was never started.
+
   ## Start options
 
   - `:new` — `binary()` or `:auto`. Start a fresh session with the
@@ -174,6 +181,12 @@ defmodule Omni.Session do
   logical turn boundary listen on `:turn`; subscribers that want the
   tree-structure change listen on `:tree`.
 
+  When a `branch/2,3` turn is cancelled or errors, Session rolls the
+  tree back to its pre-branch state and resyncs the Agent. The order is:
+
+      :cancelled (or :error) → :tree (restored) → :store {:saved, :tree}
+        → :state (forwarded from the resync)
+
   ## Persistence
 
   Session writes through the store on two triggers:
@@ -250,7 +263,8 @@ defmodule Omni.Session do
     idle_shutdown_after: nil,
     shutdown_timer: nil,
     last_persisted_state: nil,
-    regen_source: nil
+    regen_source: nil,
+    pre_branch_tree: nil
   ]
 
   # -- Public API --
@@ -372,11 +386,17 @@ defmodule Omni.Session do
     do: GenServer.call(session, {:set_agent, field, value_or_fun})
 
   @doc """
-  Sets the active path to the node at `node_id` (or clears it with `nil`).
+  Sets the active path to the node at `node_id` and extends down to a
+  leaf via cursors. Pass `nil` to clear the path entirely.
 
-  Walks parent pointers from `node_id` back to root, updating cursors
-  along the way. The wrapped Agent is resynced via
-  `Omni.Agent.set_state(messages: _)` with the new path's messages.
+  Walks parent pointers from `node_id` back to root, then follows cursors
+  forward to the most-recently-active leaf — so navigation always lands
+  on the tip of a branch, ready for a prompt. The wrapped Agent is
+  resynced via `Omni.Agent.set_state(messages: _)` with the new path's
+  messages.
+
+  Use `branch/2,3` instead when you want the path to end on a non-tip
+  node (regen, edit, new root).
 
   Idle-only: returns `{:error, status}` with the current status (`:busy`
   or `:paused`) when a turn is in flight.
@@ -715,7 +735,7 @@ defmodule Omni.Session do
 
   def handle_call({:navigate, node_id}, _from, session) do
     with :ok <- require_idle(session),
-         {:ok, session} <- apply_navigation(session, node_id, &Tree.messages/1) do
+         {:ok, session} <- apply_navigation(session, node_id, &Tree.messages/1, extend: true) do
       {:reply, :ok, session}
     else
       {:error, _} = error -> {:reply, error, session}
@@ -723,12 +743,14 @@ defmodule Omni.Session do
   end
 
   def handle_call({:branch, node_id}, _from, session) do
+    pre_tree = session.tree
+
     with :ok <- require_idle(session),
          {:ok, node} <- fetch_node(session.tree, node_id),
          :ok <- require_role(node, :user, :not_user_node),
          parent_messages_fn = &Enum.drop(Tree.messages(&1), -1),
          {:ok, session} <- apply_navigation(session, node_id, parent_messages_fn) do
-      session = %{session | regen_source: node_id}
+      session = %{session | regen_source: node_id, pre_branch_tree: pre_tree}
       :ok = Agent.prompt(session.agent, node.message.content)
       {:reply, :ok, session}
     else
@@ -737,8 +759,11 @@ defmodule Omni.Session do
   end
 
   def handle_call({:branch, nil, content}, _from, session) do
+    pre_tree = session.tree
+
     with :ok <- require_idle(session),
          {:ok, session} <- apply_navigation(session, nil, fn _ -> [] end) do
+      session = %{session | pre_branch_tree: pre_tree}
       :ok = Agent.prompt(session.agent, content)
       {:reply, :ok, session}
     else
@@ -747,10 +772,13 @@ defmodule Omni.Session do
   end
 
   def handle_call({:branch, node_id, content}, _from, session) do
+    pre_tree = session.tree
+
     with :ok <- require_idle(session),
          {:ok, node} <- fetch_node(session.tree, node_id),
          :ok <- require_role(node, :assistant, :not_assistant_node),
          {:ok, session} <- apply_navigation(session, node_id, &Tree.messages/1) do
+      session = %{session | pre_branch_tree: pre_tree}
       :ok = Agent.prompt(session.agent, content)
       {:reply, :ok, session}
     else
@@ -781,7 +809,7 @@ defmodule Omni.Session do
 
     broadcast(session, :turn, payload)
 
-    session = %{session | tree: new_tree}
+    session = %{session | tree: new_tree, pre_branch_tree: nil}
     broadcast(session, :tree, %{tree: new_tree, new_nodes: new_node_ids})
     session = persist_tree(session, new_node_ids)
 
@@ -815,11 +843,19 @@ defmodule Omni.Session do
 
   def handle_info(
         {:agent, agent_pid, type, payload},
-        %{agent: agent_pid, regen_source: source} = session
+        %{agent: agent_pid, pre_branch_tree: pre_tree} = session
       )
-      when source != nil and type in [:cancelled, :error] do
+      when pre_tree != nil and type in [:cancelled, :error] do
     broadcast(session, type, payload)
-    {:noreply, %{session | regen_source: nil}}
+
+    restored = Tree.extend(pre_tree)
+    :ok = Agent.set_state(session.agent, messages: Tree.messages(restored))
+
+    session = %{session | tree: restored, regen_source: nil, pre_branch_tree: nil}
+    broadcast(session, :tree, %{tree: restored, new_nodes: []})
+    session = persist_tree(session, [])
+
+    {:noreply, session}
   end
 
   def handle_info({:agent, agent_pid, type, payload}, %{agent: agent_pid} = session) do
@@ -947,9 +983,13 @@ defmodule Omni.Session do
   # Shared backbone for navigate/branch handle_call clauses. Walks the
   # tree to `target`, resyncs the Agent's committed messages, broadcasts
   # `:tree`, and persists. `messages_fn` derives the Agent message list
-  # from the new tree (full path, parent path, or `[]`).
-  defp apply_navigation(session, target, messages_fn) do
+  # from the new tree (full path, parent path, or `[]`). Pass
+  # `extend: true` (used by `navigate/2`) to follow cursors down to a
+  # leaf after navigating; branch call sites omit it because they need
+  # the path to end exactly on the navigation target.
+  defp apply_navigation(session, target, messages_fn, opts \\ []) do
     with {:ok, new_tree} <- Tree.navigate(session.tree, target),
+         new_tree = maybe_extend(new_tree, opts[:extend]),
          messages = messages_fn.(new_tree),
          :ok <- Agent.set_state(session.agent, messages: messages) do
       session = %{session | tree: new_tree}
@@ -958,6 +998,9 @@ defmodule Omni.Session do
       {:ok, session}
     end
   end
+
+  defp maybe_extend(tree, true), do: Tree.extend(tree)
+  defp maybe_extend(tree, _), do: tree
 
   # -- Persistence --
 

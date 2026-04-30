@@ -582,11 +582,21 @@ All idle-only — returns `{:error, status}` with the current status
 (`:busy` or `:paused`) when a turn is in flight.
 
 **`navigate/2`.** Walks parent pointers from `node_id` back to root,
-sets cursors for every parent → child pair along that path, resyncs
-the Agent via `Agent.set_state(messages: _)`, and emits `:tree` with
-empty `new_nodes`. `navigate(session, nil)` clears the active path
+sets cursors for every parent → child pair along that path, then
+extends forward via `Tree.extend/1` to follow cursors down to a leaf —
+so navigation always lands on the tip of a branch. Resyncs the Agent
+via `Agent.set_state(messages: _)` and emits `:tree` with empty
+`new_nodes`. `navigate(session, nil)` clears the active path
 (subsequent prompt creates a new disjoint root) and does not touch
 cursors or nodes.
+
+The auto-extend means navigate is always safe regardless of the
+target's role: navigating to a user node lands on the user's
+cursored assistant child; navigating to an interior assistant
+follows cursors down to the most-recently-active leaf below it. The
+exact-target form is reserved for `branch/2,3`, which deliberately
+leaves the path on a non-tip node for the duration of the in-flight
+branch turn.
 
 **`branch/2,3` — a single primitive.** "Branch from X" always means X
 is the parent of the new branch. The target's role determines the
@@ -615,12 +625,9 @@ current status atom (`:busy`, `:paused`) if not idle.
    parent).
 7. On the first `:turn` commit, drop the leading (duplicate) user
    from `response.messages` and push the rest as children of
-   `user_id`. Clear `regen_source`.
+   `user_id`. Clear `regen_source` and `pre_branch_tree`.
 8. Subsequent continuation turns push normally — the drop applies
    only to the first turn of the regen.
-9. `:cancelled` / `:error` clears `regen_source` without tree
-   mutation. Tree path remains on `user_id`; a subsequent call
-   resyncs.
 
 **Edit mechanics** (`branch/3` with assistant target):
 
@@ -628,7 +635,20 @@ current status atom (`:busy`, `:paused`) if not idle.
 2. Tree path and Agent messages both end on the assistant.
 3. `Agent.prompt(agent, content)`.
 4. On `:turn`, push all of `response.messages` as children of the
-   assistant.
+   assistant. Clear `pre_branch_tree`.
+
+**Cancel / error during a branch.** All three branch shapes snapshot
+`session.tree` into `pre_branch_tree` before navigating. On `:cancelled`
+or `:error`, Session restores the tree from that snapshot, calls
+`Tree.extend/1` to land on a tip, and resyncs the Agent via
+`Agent.set_state(messages: _)`. The conversation returns to whatever
+was live before the branch — including cursors, since the snapshot is
+the whole `Tree.t()`. `regen_source` is cleared as part of the same
+handler. The order of emitted events is `:cancelled` (or `:error`)
+→ `:tree` (restored, `new_nodes: []`) → `:store {:saved, :tree}` →
+`:state` (forwarded from the agent resync). No `:store {:saved, :state}`
+because the persistable subset (`model | system | opts | title`) does
+not change.
 
 **Cursor updates.** After a branch turn commits, the cursor at the
 divergence point points to the first newly-pushed child — the new
