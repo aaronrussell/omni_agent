@@ -23,7 +23,10 @@ defmodule Omni.Agent.State do
   - `:private` — runtime state (PIDs, ETS refs, closures). Not persisted.
     Set initial values via the `:private` start option or in `init/1`,
     update in any callback via `%{state | private: ...}`. Not settable via
-    `set_state/2,3`
+    `set_state/2,3`. The `:omni` key is reserved — when running under
+    `Omni.Session`, the session writes `private[:omni] = %{session_id:
+    ..., session_pid: ...}` before `init/1` runs and overwrites any
+    user-supplied value. Use any other key freely
   - `:status` — `:idle`, `:busy`, or `:paused`
   - `:step` — current step counter within the active turn. Resets to `0`
     when a new turn begins. Useful for step-based policies in callbacks

@@ -145,6 +145,15 @@ defmodule Omni.Agent.TestAgents do
     def handle_tool_use(_tool_use, state), do: {:execute, state}
   end
 
+  defmodule CapturesOmni do
+    use Omni.Agent
+
+    @impl Omni.Agent
+    def init(state) do
+      {:ok, %{state | private: Map.put(state.private, :captured, state.private[:omni])}}
+    end
+  end
+
   defmodule ResultAgent do
     use Omni.Agent
 

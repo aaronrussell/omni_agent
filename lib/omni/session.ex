@@ -212,6 +212,31 @@ defmodule Omni.Session do
   When the Session stops gracefully, it stops the linked Agent as part
   of its termination.
 
+  ## Agent context
+
+  Before starting the Agent, Session writes its identity into the
+  agent's `:private` under the reserved `:omni` key:
+
+      state.private.omni == %{session_id: id, session_pid: session_pid}
+
+  This is available from `init/1` onward — useful for callback modules
+  that build session-aware tools at startup:
+
+      defmodule MyAgent do
+        use Omni.Agent
+
+        @impl Omni.Agent
+        def init(state) do
+          session_id = state.private.omni.session_id
+          tools = [MyApp.Tools.navigator(session_id), ...]
+          {:ok, %{state | tools: tools}}
+        end
+      end
+
+  `:omni` is framework-owned. Any user-supplied `private[:omni]` is
+  overwritten when the Session starts the Agent; other `:private` keys
+  are preserved. Callback code is free to use any other key.
+
   ## Pub/sub
 
   `subscribe/1,2,3` registers a pid and atomically returns an
@@ -474,7 +499,7 @@ defmodule Omni.Session do
     with :ok <- validate_opts(opts),
          {:ok, id, mode} <- resolve_mode(opts),
          {:ok, tree, title, persistable, agent_opts} <- prepare(mode, id, opts),
-         {:ok, agent_pid} <- start_agent(opts[:agent], agent_opts) do
+         {:ok, agent_pid} <- start_agent(opts[:agent], agent_opts, id) do
       session =
         %__MODULE__{
           id: id,
@@ -643,15 +668,30 @@ defmodule Omni.Session do
   # Ensure Session is a subscriber from tick zero so no events race the
   # subscribe call. The user's `:subscribe` / `:subscribers` on the
   # agent opts — if any — apply to the caller, not to us.
-  defp start_agent({mod, _}, reconciled) when is_atom(mod),
-    do: Agent.start_link(mod, with_session_subscriber(reconciled))
+  defp start_agent({mod, _}, reconciled, id) when is_atom(mod),
+    do: Agent.start_link(mod, prepare_agent_opts(reconciled, id))
 
-  defp start_agent(_, reconciled) when is_list(reconciled),
-    do: Agent.start_link(with_session_subscriber(reconciled))
+  defp start_agent(_, reconciled, id) when is_list(reconciled),
+    do: Agent.start_link(prepare_agent_opts(reconciled, id))
+
+  defp prepare_agent_opts(opts, id) do
+    opts
+    |> with_session_subscriber()
+    |> with_session_private(id)
+  end
 
   defp with_session_subscriber(opts) do
     existing = List.wrap(Keyword.get(opts, :subscribers, []))
     Keyword.put(opts, :subscribers, [self() | existing])
+  end
+
+  # Reserve `:omni` inside the agent's `:private` map. Any user-supplied
+  # `private[:omni]` is overwritten — the namespace is documented as
+  # framework-owned. Other user keys are preserved.
+  defp with_session_private(opts, id) do
+    user_private = Keyword.get(opts, :private) || %{}
+    omni = %{session_id: id, session_pid: self()}
+    Keyword.put(opts, :private, Map.put(user_private, :omni, omni))
   end
 
   defp add_initial_subscribers(session, caller, opts) do

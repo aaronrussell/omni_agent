@@ -132,6 +132,13 @@ Two logical tiers:
   refs, closures) — not settable via `set_state`, mutated via
   `%{state | private: _}` inside callbacks.
 
+Inside `private`, the `:omni` key is reserved for framework-injected
+context. Plain Agent never writes it; Session writes
+`private[:omni] = %{session_id: ..., session_pid: ...}` before the
+Agent's `init/1` runs (see § 5). User-supplied `private[:omni]` is
+overwritten when running under Session. Other keys are user-owned —
+clobber-free.
+
 `state.messages` is **committed-only**. In-flight messages live in
 the internal server struct as `turn_messages` until committed at a
 `:turn` event. `state.messages` always ends with an assistant message
@@ -479,6 +486,17 @@ Session.start_link(
 
 Auto-generated ids: `:crypto.strong_rand_bytes(16) |>
 Base.url_encode64(padding: false)` (22 chars, URL-safe).
+
+**Agent context injection.** Before calling `Agent.start_link`,
+Session writes its identity into the agent's `:private`:
+
+```elixir
+private[:omni] = %{session_id: id, session_pid: self()}
+```
+
+Other `:private` keys the user supplied are preserved. The `:omni`
+key is reserved (see § 4.1) — any user value at that key is
+overwritten. Available from the callback module's `init/1` onward.
 
 ### 5.4 Load-mode resolution
 

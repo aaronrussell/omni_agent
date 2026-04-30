@@ -37,3 +37,13 @@ scheduled.
   `:busy` with a staged prompt, producing a response before the
   caller interacts. Needs concrete use cases before a shape is worth
   committing to.
+
+- **Session-level `:data` field.** App-defined per-conversation
+  metadata, persisted alongside `title` and surfaced in `Store.list`.
+  Use cases: tagging sessions for filtered listings (project_id,
+  priority, category); attaching app-owned identity (user_id,
+  tenant_id) without baking it into the system prompt. Distinct from
+  `state.private` on Agent — process-lifetime callback state stays
+  there. Open questions on the API shape (whole-map replace vs.
+  Map.put style; Session events on change; how callbacks read it —
+  via `private[:omni]` projection?).

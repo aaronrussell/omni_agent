@@ -97,7 +97,9 @@ defmodule Omni.Agent do
     `:assistant` message containing no `%ToolUse{}` blocks
   - `:tools` — list of `%Tool{}` structs
   - `:private` — initial private map (runtime state visible in callbacks
-    via `state.private`)
+    via `state.private`). The `:omni` key is reserved for framework-
+    injected context when running under `Omni.Session` — see
+    `Omni.Agent.State`
   - `:subscribe` — if `true`, subscribes the caller to agent events
   - `:subscribers` — list of pids to subscribe to agent events
   - `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)

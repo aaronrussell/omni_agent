@@ -93,6 +93,10 @@ lib/omni/
   `init/1`.
 - `state.private` is not settable via `set_state` — callbacks mutate
   it via `%{state | private: _}`.
+- `state.private[:omni]` is reserved for framework-injected context.
+  Session writes `%{session_id: id, session_pid: pid}` there before
+  the agent's `init/1` runs; user values at that key are overwritten.
+  Other `:private` keys are user-owned.
 - Settable fields on Agent: `:model | :system | :messages | :tools |
   :opts`. All values **replace** — no merge semantics at the API
   boundary (use the function form of `set_state/3` to transform).
