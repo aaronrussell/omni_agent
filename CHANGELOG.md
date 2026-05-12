@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-12
+
+### Changed
+
+- **`omni` dependency relaxed to `~> 1.3`** — allows any `1.x >= 1.3` to avoid version clashes with downstream packages tracking newer `1.x` releases.
+
 ## [0.3.0] - 2026-05-01
 
 This release introduces the **Session** and **Manager** layers on top of `Omni.Agent` — conversation lifetime, a branching message tree, pluggable persistence, pub/sub, and multi-session supervision.
@@ -66,7 +72,8 @@ The agent internals were simplified — the loop hierarchy was flattened from th
 
 ---
 
-[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.3.1
 [0.3.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.3.0
 [0.2.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.2.0
 [0.1.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.1.0
