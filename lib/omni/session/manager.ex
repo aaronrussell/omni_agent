@@ -14,7 +14,7 @@ defmodule Omni.Session.Manager do
 
       # config/config.exs
       config :my_app, MyApp.Sessions,
-        store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions", otp_app: :my_app}
+        store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions", otp_app: :my_app}
 
       # application.ex
       children = [MyApp.Sessions]

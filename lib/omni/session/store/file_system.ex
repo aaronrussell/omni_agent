@@ -12,7 +12,7 @@ defmodule Omni.Session.Store.FileSystem do
 
   Each session lives in its own directory with two files:
 
-      <base_path>/
+      <base_dir>/
         <session_id>/
           nodes.jsonl     # tree nodes, one JSON-encoded node per line
           session.json    # path, cursors, state fields, timestamps
@@ -25,24 +25,24 @@ defmodule Omni.Session.Store.FileSystem do
 
   ## Configuration
 
-    * `:base_path` — **required**. Absolute paths are used verbatim.
+    * `:base_dir` — **required**. Absolute paths are used verbatim.
       Relative paths require `:otp_app` (see below) and are resolved via
       `Application.app_dir/2`.
     * `:otp_app` — optional. When set together with a relative
-      `:base_path`, the adapter resolves the absolute base via
-      `Application.app_dir(otp_app, base_path)`. This is CWD-independent
+      `:base_dir`, the adapter resolves the absolute base via
+      `Application.app_dir(otp_app, base_dir)`. This is CWD-independent
       and remains stable across the BEAM lifetime, unlike paths derived
       from `File.cwd!/0` which can shift under code reloading or `cd`.
 
   Examples:
 
       # Absolute — used as-is
-      {Omni.Session.Store.FileSystem, base_path: "/var/data/sessions"}
+      {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
 
       # Relative under :my_app's priv directory
-      {Omni.Session.Store.FileSystem, base_path: "priv/sessions", otp_app: :my_app}
+      {Omni.Session.Store.FileSystem, base_dir: "priv/sessions", otp_app: :my_app}
 
-  Passing a relative `:base_path` without `:otp_app` raises
+  Passing a relative `:base_dir` without `:otp_app` raises
   `ArgumentError` on first use — silent CWD-dependent storage is a
   foot-gun the adapter refuses to enable.
 
@@ -95,7 +95,7 @@ defmodule Omni.Session.Store.FileSystem do
   def load(cfg, id, _opts \\ []) do
     dir = session_dir(cfg, id)
 
-    case read_session_json(session_path(dir)) do
+    case read_session_json(session_file(dir)) do
       {:ok, session_json} ->
         nodes = read_nodes(dir)
         path = session_json["path"] || []
@@ -110,7 +110,7 @@ defmodule Omni.Session.Store.FileSystem do
 
   @impl true
   def list(cfg, opts \\ []) do
-    base = base_path(cfg)
+    base = base_dir(cfg)
 
     sessions =
       case File.ls(base) do
@@ -139,23 +139,23 @@ defmodule Omni.Session.Store.FileSystem do
 
   @impl true
   def exists?(cfg, id) do
-    cfg |> session_dir(id) |> session_path() |> File.exists?()
+    cfg |> session_dir(id) |> session_file() |> File.exists?()
   end
 
   # ── Paths ──────────────────────────────────────────────────────────
 
-  defp base_path(cfg) do
-    case Keyword.fetch(cfg, :base_path) do
+  defp base_dir(cfg) do
+    case Keyword.fetch(cfg, :base_dir) do
       {:ok, path} ->
-        resolve_base_path(path, Keyword.get(cfg, :otp_app))
+        resolve_base_dir(path, Keyword.get(cfg, :otp_app))
 
       :error ->
         raise ArgumentError,
-              "#{inspect(__MODULE__)} requires a :base_path in its config"
+              "#{inspect(__MODULE__)} requires a :base_dir in its config"
     end
   end
 
-  defp resolve_base_path(path, otp_app) do
+  defp resolve_base_dir(path, otp_app) do
     cond do
       Path.type(path) == :absolute ->
         path
@@ -165,15 +165,15 @@ defmodule Omni.Session.Store.FileSystem do
 
       true ->
         raise ArgumentError,
-              "#{inspect(__MODULE__)} :base_path #{inspect(path)} is relative; " <>
+              "#{inspect(__MODULE__)} :base_dir #{inspect(path)} is relative; " <>
                 "either pass an absolute path or set :otp_app so the path can " <>
                 "be resolved via Application.app_dir/2"
     end
   end
 
-  defp session_dir(cfg, id), do: Path.join(base_path(cfg), id)
-  defp session_path(dir), do: Path.join(dir, "session.json")
-  defp nodes_path(dir), do: Path.join(dir, "nodes.jsonl")
+  defp session_dir(cfg, id), do: Path.join(base_dir(cfg), id)
+  defp session_file(dir), do: Path.join(dir, "session.json")
+  defp nodes_file(dir), do: Path.join(dir, "nodes.jsonl")
 
   # ── Nodes file ─────────────────────────────────────────────────────
 
@@ -185,7 +185,7 @@ defmodule Omni.Session.Store.FileSystem do
       |> Enum.sort_by(& &1.id)
       |> Enum.map(&(encode_node(&1) <> "\n"))
 
-    File.write(nodes_path(dir), lines)
+    File.write(nodes_file(dir), lines)
   end
 
   # [] = navigation-only save, don't touch the nodes file
@@ -198,7 +198,7 @@ defmodule Omni.Session.Store.FileSystem do
       |> Enum.map(&Map.fetch!(nodes, &1))
       |> Enum.map(&(encode_node(&1) <> "\n"))
 
-    File.write(nodes_path(dir), lines, [:append, :sync])
+    File.write(nodes_file(dir), lines, [:append, :sync])
   end
 
   # nodes.jsonl is an append-only log. A malformed line (typically a torn
@@ -207,7 +207,7 @@ defmodule Omni.Session.Store.FileSystem do
   # write followed by a successful append would otherwise permanently
   # brick the session.
   defp read_nodes(dir) do
-    path = nodes_path(dir)
+    path = nodes_file(dir)
 
     if File.exists?(path) do
       path
@@ -256,7 +256,7 @@ defmodule Omni.Session.Store.FileSystem do
   # ── session.json ───────────────────────────────────────────────────
 
   defp update_session_json(dir, updates) do
-    path = session_path(dir)
+    path = session_file(dir)
     now_iso = DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
 
     existing =

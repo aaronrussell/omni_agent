@@ -73,6 +73,10 @@ lib/omni/
 
 ### Terminology
 
+- **Filesystem path names** — `*_dir` for a path to a directory,
+  `*_file` for a path to a file, `*_path` for generic or
+  non-filesystem paths (e.g. URL paths, tree paths). This convention
+  applies across all omni packages.
 - **Tool use**, not "tool call" (aligns with Anthropic and `omni`).
 - **Message** = a single message. **Step** = one LLM request-response
   cycle (user → assistant message). **Turn** = one or more sequential

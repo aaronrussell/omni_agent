@@ -10,7 +10,7 @@ defmodule Omni.Session.Store do
   at `Session.start_link(store: ...)` time, Session threads it through
   internally, and applications stash it wherever they like.
 
-      store = {Omni.Session.Store.FileSystem, base_path: "/data/sessions"}
+      store = {Omni.Session.Store.FileSystem, base_dir: "/data/sessions"}
 
       Omni.Session.start_link(store: store, new: "abc", agent: [...])
       Omni.Session.Store.delete(store, "abc")
@@ -26,7 +26,7 @@ defmodule Omni.Session.Store do
 
       # config/config.exs
       config :my_app, MyApp.Sessions,
-        store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions", otp_app: :my_app}
+        store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions", otp_app: :my_app}
 
       # everywhere a session is needed
       MyApp.Sessions.create(agent: [...])
@@ -41,7 +41,7 @@ defmodule Omni.Session.Store do
   store tuple. A module attribute is enough for static configuration:
 
       defmodule MyApp.Storage do
-        @store {Omni.Session.Store.FileSystem, base_path: "/var/data/sessions"}
+        @store {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
         def store, do: @store
       end
 

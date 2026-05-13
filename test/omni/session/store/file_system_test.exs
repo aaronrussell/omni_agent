@@ -12,7 +12,7 @@ defmodule Omni.Session.Store.FileSystemTest do
   defp user(text), do: Message.new(text)
   defp assistant(text), do: Message.new(role: :assistant, content: text)
 
-  defp cfg(%{tmp_dir: dir}), do: [base_path: dir]
+  defp cfg(%{tmp_dir: dir}), do: [base_dir: dir]
 
   defp sample_tree do
     %Tree{}
@@ -53,17 +53,17 @@ defmodule Omni.Session.Store.FileSystemTest do
   end
 
   describe "config validation" do
-    test "raises when :base_path is missing" do
-      assert_raise ArgumentError, ~r/base_path/, fn ->
+    test "raises when :base_dir is missing" do
+      assert_raise ArgumentError, ~r/base_dir/, fn ->
         FileSystem.save_tree([], "s1", %Tree{})
       end
     end
   end
 
   describe ":otp_app option" do
-    test "resolves a relative :base_path via Application.app_dir/2" do
+    test "resolves a relative :base_dir via Application.app_dir/2" do
       rel = "tmp/otp_app_test_#{System.unique_integer([:positive])}"
-      cfg = [base_path: rel, otp_app: :omni_agent]
+      cfg = [base_dir: rel, otp_app: :omni_agent]
       expected = Application.app_dir(:omni_agent, rel)
 
       on_exit(fn -> File.rm_rf!(expected) end)
@@ -76,8 +76,8 @@ defmodule Omni.Session.Store.FileSystemTest do
       assert loaded == tree
     end
 
-    test "raises ArgumentError when :base_path is relative without :otp_app" do
-      cfg = [base_path: "tmp/no_otp_app"]
+    test "raises ArgumentError when :base_dir is relative without :otp_app" do
+      cfg = [base_dir: "tmp/no_otp_app"]
 
       assert_raise ArgumentError, ~r/relative/, fn ->
         FileSystem.save_tree(cfg, "s1", sample_tree())
@@ -92,8 +92,8 @@ defmodule Omni.Session.Store.FileSystemTest do
       end
     end
 
-    test "absolute :base_path takes precedence over :otp_app", ctx do
-      cfg = [base_path: ctx.tmp_dir, otp_app: :omni_agent]
+    test "absolute :base_dir takes precedence over :otp_app", ctx do
+      cfg = [base_dir: ctx.tmp_dir, otp_app: :omni_agent]
 
       assert :ok = FileSystem.save_tree(cfg, "s1", sample_tree())
       assert File.exists?(Path.join([ctx.tmp_dir, "s1", "session.json"]))
@@ -348,8 +348,8 @@ defmodule Omni.Session.Store.FileSystemTest do
       assert {:ok, []} = FileSystem.list(cfg(ctx))
     end
 
-    test "returns empty when base_path does not exist", ctx do
-      assert {:ok, []} = FileSystem.list(base_path: Path.join(ctx.tmp_dir, "missing"))
+    test "returns empty when base_dir does not exist", ctx do
+      assert {:ok, []} = FileSystem.list(base_dir: Path.join(ctx.tmp_dir, "missing"))
     end
 
     test "lists multiple sessions sorted by updated_at descending", ctx do
@@ -481,8 +481,8 @@ defmodule Omni.Session.Store.FileSystemTest do
 
       # Simulate a crash mid-append: a fragment with no closing brace and
       # no trailing newline.
-      nodes_path = Path.join([ctx.tmp_dir, "s1", "nodes.jsonl"])
-      File.write!(nodes_path, ~s({"id":99,"parent_id":1,"mess), [:append])
+      nodes_file = Path.join([ctx.tmp_dir, "s1", "nodes.jsonl"])
+      File.write!(nodes_file, ~s({"id":99,"parent_id":1,"mess), [:append])
 
       log =
         capture_log(fn ->
@@ -501,11 +501,11 @@ defmodule Omni.Session.Store.FileSystemTest do
       # Simulate torn-then-successful-append: the bad line is now in the
       # middle of the file. The uniform-skip rule recovers both valid
       # entries.
-      nodes_path = Path.join([ctx.tmp_dir, "s1", "nodes.jsonl"])
-      original = File.read!(nodes_path)
+      nodes_file = Path.join([ctx.tmp_dir, "s1", "nodes.jsonl"])
+      original = File.read!(nodes_file)
       [line1, line2 | _] = String.split(original, "\n", trim: true)
       torn = ~s({"id":99,"parent_id":1,"mess)
-      File.write!(nodes_path, [line1, "\n", torn, "\n", line2, "\n"])
+      File.write!(nodes_file, [line1, "\n", torn, "\n", line2, "\n"])
 
       log =
         capture_log(fn ->
@@ -521,8 +521,8 @@ defmodule Omni.Session.Store.FileSystemTest do
       :ok = FileSystem.save_tree(cfg(ctx), "s1", sample_tree())
 
       # Simulate a crash between File.write's truncate and flush.
-      session_path = Path.join([ctx.tmp_dir, "s1", "session.json"])
-      File.write!(session_path, "")
+      session_file = Path.join([ctx.tmp_dir, "s1", "session.json"])
+      File.write!(session_file, "")
 
       assert {:error, :not_found} = FileSystem.load(cfg(ctx), "s1")
     end
@@ -533,10 +533,10 @@ defmodule Omni.Session.Store.FileSystemTest do
       # Simulate a crash between tmp-write and rename: a stale .tmp is
       # left next to session.json. The next save must succeed and not
       # leave the stale content behind.
-      session_path = Path.join([ctx.tmp_dir, "s1", "session.json"])
-      tmp_path = session_path <> ".tmp"
+      session_file = Path.join([ctx.tmp_dir, "s1", "session.json"])
+      tmp_path = session_file <> ".tmp"
       File.write!(tmp_path, "{broken junk")
-      original = File.read!(session_path)
+      original = File.read!(session_file)
 
       # Live file is still intact before the next save.
       assert original != ""

@@ -792,7 +792,7 @@ the shape everywhere: `Session.start_link(store: _)`, dispatch calls,
 and application-owned wrapper modules.
 
 ```elixir
-store = {Omni.Session.Store.FileSystem, base_path: "/data/sessions"}
+store = {Omni.Session.Store.FileSystem, base_dir: "/data/sessions"}
 Omni.Session.Store.delete(store, "abc")
 ```
 
@@ -847,7 +847,7 @@ adapters bubble up unwrapped.
 Per-session directory, two files:
 
 ```
-<base_path>/<session_id>/
+<base_dir>/<session_id>/
   nodes.jsonl     # one JSON-encoded node per line
   session.json    # path, cursors, state-map fields, timestamps
 ```
@@ -873,7 +873,7 @@ Per-session directory, two files:
   and arbitrary values). `created_at` / `updated_at` are ISO8601
   strings managed by the adapter.
 
-Configuration: `base_path` required; adapter raises `ArgumentError`
+Configuration: `base_dir` required; adapter raises `ArgumentError`
 when absent.
 
 Load corner cases:
@@ -907,7 +907,7 @@ end
 # application.ex
 children = [
   {MyApp.Sessions,
-     store: {Omni.Session.Store.FileSystem, base_path: "priv/sessions"}}
+     store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions"}}
 ]
 ```
 

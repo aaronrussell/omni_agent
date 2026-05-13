@@ -92,7 +92,7 @@ defmodule Omni.Session.ManagerTest do
 
   describe "use macro app-env config" do
     test "starts from Application.get_env when no start-opts are passed", ctx do
-      store = {FileSystem, base_path: Path.join(ctx.tmp_dir, "app_env")}
+      store = {FileSystem, base_dir: Path.join(ctx.tmp_dir, "app_env")}
 
       Application.put_env(:omni_agent, AppEnvManager, store: store)
       on_exit(fn -> Application.delete_env(:omni_agent, AppEnvManager) end)
@@ -104,8 +104,8 @@ defmodule Omni.Session.ManagerTest do
     end
 
     test "supervisor start-opts override app-env values", ctx do
-      app_store = {FileSystem, base_path: Path.join(ctx.tmp_dir, "from_app_env")}
-      override_store = {FileSystem, base_path: Path.join(ctx.tmp_dir, "from_start_opts")}
+      app_store = {FileSystem, base_dir: Path.join(ctx.tmp_dir, "from_app_env")}
+      override_store = {FileSystem, base_dir: Path.join(ctx.tmp_dir, "from_start_opts")}
 
       Application.put_env(:omni_agent, OverrideManager, store: app_store)
       on_exit(fn -> Application.delete_env(:omni_agent, OverrideManager) end)
@@ -162,7 +162,7 @@ defmodule Omni.Session.ManagerTest do
 
     test "rejects Manager-owned opts", %{manager: m} do
       assert {:error, {:invalid_opt, :store}} =
-               Manager.create(m, store: {FileSystem, base_path: "/tmp"}, agent: minimal_agent())
+               Manager.create(m, store: {FileSystem, base_dir: "/tmp"}, agent: minimal_agent())
 
       assert {:error, {:invalid_opt, :name}} = Manager.create(m, name: :nope)
       assert {:error, {:invalid_opt, :new}} = Manager.create(m, new: "a")
@@ -340,7 +340,7 @@ defmodule Omni.Session.ManagerTest do
 
     test "rejects Manager-owned opts", %{manager: m} do
       assert {:error, {:invalid_opt, :store}} =
-               Manager.open(m, "x", store: {FileSystem, base_path: "/tmp"})
+               Manager.open(m, "x", store: {FileSystem, base_dir: "/tmp"})
 
       assert {:error, {:invalid_opt, :new}} = Manager.open(m, "x", new: "y")
       assert {:error, {:invalid_opt, :load}} = Manager.open(m, "x", load: "y")
@@ -457,8 +457,8 @@ defmodule Omni.Session.ManagerTest do
       m1 = unique_name()
       m2 = unique_name()
 
-      store1 = {FileSystem, base_path: Path.join(ctx.tmp_dir, "m1")}
-      store2 = {FileSystem, base_path: Path.join(ctx.tmp_dir, "m2")}
+      store1 = {FileSystem, base_dir: Path.join(ctx.tmp_dir, "m1")}
+      store2 = {FileSystem, base_dir: Path.join(ctx.tmp_dir, "m2")}
 
       start_supervised!({Manager, name: m1, store: store1}, id: m1)
       start_supervised!({Manager, name: m2, store: store2}, id: m2)

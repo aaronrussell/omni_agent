@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **`Omni.Session.Store.FileSystem` — `:base_path` option renamed to `:base_dir`** to follow a consistent naming convention across omni packages.
+
 ## [0.3.1] - 2026-05-12
 
 ### Changed
