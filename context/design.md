@@ -787,14 +787,19 @@ exit doesn't race `GenServer.stop`.
 
 ### 6.1 Canonical shape
 
-A store is a `{module, keyword()}` tuple — adapter + config. This is
-the shape everywhere: `Session.start_link(store: _)`, dispatch calls,
-and application-owned wrapper modules.
+A store is a `%Omni.Session.Store{}` struct pairing the adapter module
+with its initialised config. Build one with `Store.init/1`, which
+accepts a `{module, keyword}` tuple, a bare module, or an
+already-initialised struct (pass-through):
 
 ```elixir
-store = {Omni.Session.Store.FileSystem, base_dir: "/data/sessions"}
+{:ok, store} = Omni.Session.Store.init({Omni.Session.Store.FileSystem, base_dir: "/data/sessions"})
 Omni.Session.Store.delete(store, "abc")
 ```
+
+`Session.start_link(store: _)` and `Manager.start_link(store: _)`
+accept any of these input forms and call `init/1` internally, so
+callers rarely need to call it directly.
 
 No global `Application.env` fallback — apps wrap the tuple in their
 own helper (`MyApp.Storage.store()`) if they want centralised config.
@@ -802,6 +807,7 @@ own helper (`MyApp.Storage.store()`) if they want centralised config.
 ### 6.2 Behaviour
 
 ```elixir
+@callback init(keyword()) :: {:ok, term()} | {:error, term()}
 @callback save_tree(cfg, session_id, Tree.t(), keyword()) :: :ok | {:error, term()}
 @callback save_state(cfg, session_id, state_map(), keyword()) :: :ok | {:error, term()}
 @callback load(cfg, session_id, keyword()) ::
@@ -810,6 +816,11 @@ own helper (`MyApp.Storage.store()`) if they want centralised config.
 @callback delete(cfg, session_id, keyword()) :: :ok | {:error, term()}
 @callback exists?(cfg, session_id) :: boolean()
 ```
+
+`init/1` receives the raw keyword config from the store tuple and
+returns `{:ok, config_state}` or `{:error, reason}`. The returned
+`config_state` is what all other callbacks receive as their `cfg`
+argument.
 
 **`state_map`** is a strict four-key shape (partial on load, full on
 write):
@@ -873,8 +884,8 @@ Per-session directory, two files:
   and arbitrary values). `created_at` / `updated_at` are ISO8601
   strings managed by the adapter.
 
-Configuration: `base_dir` required; adapter raises `ArgumentError`
-when absent.
+Configuration: `base_dir` required, must be absolute. Validated in
+`init/1`; returns `{:error, reason}` when missing or relative.
 
 Load corner cases:
 
@@ -907,7 +918,7 @@ end
 # application.ex
 children = [
   {MyApp.Sessions,
-     store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions"}}
+     store: {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}}
 ]
 ```
 

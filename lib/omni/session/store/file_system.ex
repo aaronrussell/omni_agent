@@ -25,26 +25,17 @@ defmodule Omni.Session.Store.FileSystem do
 
   ## Configuration
 
-    * `:base_dir` — **required**. Absolute paths are used verbatim.
-      Relative paths require `:otp_app` (see below) and are resolved via
-      `Application.app_dir/2`.
-    * `:otp_app` — optional. When set together with a relative
-      `:base_dir`, the adapter resolves the absolute base via
-      `Application.app_dir(otp_app, base_dir)`. This is CWD-independent
-      and remains stable across the BEAM lifetime, unlike paths derived
-      from `File.cwd!/0` which can shift under code reloading or `cd`.
+    * `:base_dir` — **required**. Must be an absolute path.
 
-  Examples:
+  Example:
 
-      # Absolute — used as-is
       {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
 
-      # Relative under :my_app's priv directory
-      {Omni.Session.Store.FileSystem, base_dir: "priv/sessions", otp_app: :my_app}
+  For paths relative to an OTP application's install directory, resolve
+  them before constructing the store:
 
-  Passing a relative `:base_dir` without `:otp_app` raises
-  `ArgumentError` on first use — silent CWD-dependent storage is a
-  foot-gun the adapter refuses to enable.
+      base = Application.app_dir(:my_app, "priv/sessions")
+      {Omni.Session.Store.FileSystem, base_dir: base}
 
   ## Encoding
 
@@ -65,6 +56,23 @@ defmodule Omni.Session.Store.FileSystem do
 
   alias Omni.Codec
   alias Omni.Session.Tree
+
+  @impl true
+  def init(cfg) do
+    case Keyword.fetch(cfg, :base_dir) do
+      {:ok, path} when is_binary(path) ->
+        if Path.type(path) == :absolute do
+          {:ok, cfg}
+        else
+          {:error,
+           "#{inspect(__MODULE__)} :base_dir must be an absolute path, " <>
+             "got: #{inspect(path)}"}
+        end
+
+      _ ->
+        {:error, "#{inspect(__MODULE__)} requires a :base_dir option"}
+    end
+  end
 
   @impl true
   def save_tree(cfg, id, %Tree{} = tree, opts \\ []) do
@@ -144,33 +152,7 @@ defmodule Omni.Session.Store.FileSystem do
 
   # ── Paths ──────────────────────────────────────────────────────────
 
-  defp base_dir(cfg) do
-    case Keyword.fetch(cfg, :base_dir) do
-      {:ok, path} ->
-        resolve_base_dir(path, Keyword.get(cfg, :otp_app))
-
-      :error ->
-        raise ArgumentError,
-              "#{inspect(__MODULE__)} requires a :base_dir in its config"
-    end
-  end
-
-  defp resolve_base_dir(path, otp_app) do
-    cond do
-      Path.type(path) == :absolute ->
-        path
-
-      is_atom(otp_app) and not is_nil(otp_app) ->
-        Application.app_dir(otp_app, path)
-
-      true ->
-        raise ArgumentError,
-              "#{inspect(__MODULE__)} :base_dir #{inspect(path)} is relative; " <>
-                "either pass an absolute path or set :otp_app so the path can " <>
-                "be resolved via Application.app_dir/2"
-    end
-  end
-
+  defp base_dir(cfg), do: Keyword.fetch!(cfg, :base_dir)
   defp session_dir(cfg, id), do: Path.join(base_dir(cfg), id)
   defp session_file(dir), do: Path.join(dir, "session.json")
   defp nodes_file(dir), do: Path.join(dir, "nodes.jsonl")

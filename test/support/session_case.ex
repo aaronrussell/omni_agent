@@ -47,7 +47,11 @@ defmodule Omni.Session.SessionCase do
       end
 
       # Fresh per-test filesystem store. Uses ExUnit's @moduletag :tmp_dir.
-      defp tmp_store(%{tmp_dir: dir}), do: {FileSystem, base_dir: dir}
+      defp tmp_store(%{tmp_dir: dir}) do
+        {:ok, store} = Store.init({FileSystem, base_dir: dir})
+        store
+      end
+
       defp tmp_store(_), do: raise("session_case tests require @moduletag :tmp_dir")
 
       defp unique_stub_name do

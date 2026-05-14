@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Changed
 
+- **`Omni.Session.Store` is now a struct** — stores are initialised via `Store.init/1` (accepts `{module, keyword}`, a bare module, or an already-initialised `%Store{}`). `Session.start_link/1` and `Manager.start_link/1` call `init/1` internally, so callers can still pass tuples. Adapters must implement the new `c:init/1` callback.
+- **`Omni.Session.Store.FileSystem` — `:base_dir` must be absolute; `:otp_app` option removed.** Callers needing app-relative paths should resolve them before constructing the store (e.g. `Application.app_dir(:my_app, "priv/sessions")`).
 - **`Omni.Session.Store.FileSystem` — `:base_path` option renamed to `:base_dir`** to follow a consistent naming convention across omni packages.
 
 ## [0.3.1] - 2026-05-12

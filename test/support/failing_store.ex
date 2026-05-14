@@ -21,6 +21,23 @@ defmodule Omni.Session.Store.Failing do
   alias Omni.Session.Tree
 
   @impl true
+  def init(cfg) do
+    case Keyword.get(cfg, :delegate) do
+      nil ->
+        {:ok, cfg}
+
+      delegate_input ->
+        case Omni.Session.Store.init(delegate_input) do
+          {:ok, delegate_store} ->
+            {:ok, Keyword.put(cfg, :delegate, delegate_store)}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  @impl true
   def save_tree(cfg, id, tree, opts) do
     case Keyword.get(cfg, :fail_save_tree) do
       nil ->

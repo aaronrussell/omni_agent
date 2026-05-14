@@ -5,10 +5,13 @@ defmodule Omni.Session.StoreTest do
   alias Omni.Session.{Store, Tree}
 
   # Minimal adapter that echoes each call back to the test process,
-  # used to verify that Store dispatch unpacks `{module, config}`
-  # correctly and forwards arguments in order.
+  # used to verify that Store dispatch unpacks the struct correctly
+  # and forwards arguments in order.
   defmodule EchoAdapter do
     @behaviour Omni.Session.Store
+
+    @impl true
+    def init(config), do: {:ok, config}
 
     @impl true
     def save_tree(config, id, tree, opts) do
@@ -47,8 +50,59 @@ defmodule Omni.Session.StoreTest do
     end
   end
 
+  defmodule FailingInit do
+    @behaviour Omni.Session.Store
+
+    @impl true
+    def init(_cfg), do: {:error, :bad_config}
+
+    @impl true
+    def save_tree(_, _, _, _), do: :ok
+    @impl true
+    def save_state(_, _, _, _), do: :ok
+    @impl true
+    def load(_, _, _), do: {:error, :not_found}
+    @impl true
+    def list(_, _), do: {:ok, []}
+    @impl true
+    def delete(_, _, _), do: :ok
+    @impl true
+    def exists?(_, _), do: false
+  end
+
   setup do
-    %{store: {EchoAdapter, test_pid: self()}}
+    {:ok, store} = Store.init({EchoAdapter, test_pid: self()})
+    %{store: store}
+  end
+
+  describe "init/1" do
+    test "initialises from a {module, keyword} tuple" do
+      assert {:ok, %Store{module: EchoAdapter, config: cfg}} =
+               Store.init({EchoAdapter, test_pid: self()})
+
+      assert cfg[:test_pid] == self()
+    end
+
+    test "initialises from a bare module" do
+      assert {:ok, %Store{module: EchoAdapter, config: []}} =
+               Store.init(EchoAdapter)
+    end
+
+    test "passes through an already-initialised struct" do
+      {:ok, store} = Store.init({EchoAdapter, test_pid: self()})
+      assert {:ok, ^store} = Store.init(store)
+    end
+
+    test "returns error when adapter init fails" do
+      assert {:error, :bad_config} = Store.init({FailingInit, []})
+      assert {:error, :bad_config} = Store.init(FailingInit)
+    end
+
+    test "returns error for invalid input" do
+      assert {:error, {:invalid_store, 42}} = Store.init(42)
+      assert {:error, {:invalid_store, "nope"}} = Store.init("nope")
+      assert {:error, {:invalid_store, nil}} = Store.init(nil)
+    end
   end
 
   describe "save_tree/4" do

@@ -52,51 +52,19 @@ defmodule Omni.Session.Store.FileSystemTest do
     |> String.split("\n", trim: true)
   end
 
-  describe "config validation" do
-    test "raises when :base_dir is missing" do
-      assert_raise ArgumentError, ~r/base_dir/, fn ->
-        FileSystem.save_tree([], "s1", %Tree{})
-      end
-    end
-  end
-
-  describe ":otp_app option" do
-    test "resolves a relative :base_dir via Application.app_dir/2" do
-      rel = "tmp/otp_app_test_#{System.unique_integer([:positive])}"
-      cfg = [base_dir: rel, otp_app: :omni_agent]
-      expected = Application.app_dir(:omni_agent, rel)
-
-      on_exit(fn -> File.rm_rf!(expected) end)
-
-      tree = sample_tree()
-      assert :ok = FileSystem.save_tree(cfg, "s1", tree)
-      assert File.exists?(Path.join([expected, "s1", "session.json"]))
-
-      assert {:ok, loaded, _} = FileSystem.load(cfg, "s1")
-      assert loaded == tree
+  describe "init/1" do
+    test "succeeds with an absolute :base_dir" do
+      assert {:ok, [base_dir: "/absolute/path"]} = FileSystem.init(base_dir: "/absolute/path")
     end
 
-    test "raises ArgumentError when :base_dir is relative without :otp_app" do
-      cfg = [base_dir: "tmp/no_otp_app"]
-
-      assert_raise ArgumentError, ~r/relative/, fn ->
-        FileSystem.save_tree(cfg, "s1", sample_tree())
-      end
-
-      assert_raise ArgumentError, ~r/relative/, fn ->
-        FileSystem.load(cfg, "s1")
-      end
-
-      assert_raise ArgumentError, ~r/relative/, fn ->
-        FileSystem.list(cfg)
-      end
+    test "returns error when :base_dir is relative" do
+      assert {:error, msg} = FileSystem.init(base_dir: "relative/path")
+      assert msg =~ "absolute"
     end
 
-    test "absolute :base_dir takes precedence over :otp_app", ctx do
-      cfg = [base_dir: ctx.tmp_dir, otp_app: :omni_agent]
-
-      assert :ok = FileSystem.save_tree(cfg, "s1", sample_tree())
-      assert File.exists?(Path.join([ctx.tmp_dir, "s1", "session.json"]))
+    test "returns error when :base_dir is missing" do
+      assert {:error, msg} = FileSystem.init([])
+      assert msg =~ "base_dir"
     end
   end
 

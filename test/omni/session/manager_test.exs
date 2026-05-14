@@ -100,7 +100,8 @@ defmodule Omni.Session.ManagerTest do
       start_supervised!(AppEnvManager)
 
       {:ok, pid} = AppEnvManager.create(agent: minimal_agent(), subscribe: false)
-      assert session_state(pid).store == store
+      {:ok, expected} = Store.init(store)
+      assert session_state(pid).store == expected
     end
 
     test "supervisor start-opts override app-env values", ctx do
@@ -113,7 +114,8 @@ defmodule Omni.Session.ManagerTest do
       start_supervised!({OverrideManager, store: override_store})
 
       {:ok, pid} = OverrideManager.create(agent: minimal_agent(), subscribe: false)
-      assert session_state(pid).store == override_store
+      {:ok, expected} = Store.init(override_store)
+      assert session_state(pid).store == expected
     end
 
     test "fails to start when :store is configured nowhere" do
@@ -494,11 +496,11 @@ defmodule Omni.Session.ManagerTest do
       assert msg =~ ":store"
     end
 
-    test "raises on non-tuple :store" do
+    test "raises on invalid :store" do
       assert {:error, {%ArgumentError{message: msg}, _}} =
                Manager.start_link(name: unique_name(), store: :not_a_tuple)
 
-      assert msg =~ ":store must be"
+      assert msg =~ ":store"
     end
 
     test "raises on invalid idle_shutdown_after", ctx do

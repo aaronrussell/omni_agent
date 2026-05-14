@@ -5,15 +5,22 @@ defmodule Omni.Session.Store do
   Defines the adapter behaviour that storage backends implement, and the
   dispatch functions that `Omni.Session` (and applications) call.
 
-  A **store** is a `{module, keyword()}` tuple pairing the adapter module
-  with its config. This is the canonical shape everywhere: users write it
-  at `Session.start_link(store: ...)` time, Session threads it through
-  internally, and applications stash it wherever they like.
+  A **store** is a `%Store{}` struct pairing the adapter module with its
+  initialised config. Build one with `init/1`, which accepts several
+  convenience forms:
 
-      store = {Omni.Session.Store.FileSystem, base_dir: "/data/sessions"}
+      # Tuple — the most common form in config files
+      {:ok, store} = Omni.Session.Store.init({Omni.Session.Store.FileSystem, base_dir: "/data/sessions"})
 
-      Omni.Session.start_link(store: store, new: "abc", agent: [...])
-      Omni.Session.Store.delete(store, "abc")
+      # Bare module — equivalent to {mod, []}
+      {:ok, store} = Omni.Session.Store.init(Omni.Session.Store.FileSystem)
+
+      # Already-initialised struct — pass-through
+      {:ok, ^store} = Omni.Session.Store.init(store)
+
+  `Omni.Session.start_link/1` and `Omni.Session.Manager.start_link/1`
+  both accept any of these forms as the `:store` option and call
+  `init/1` internally, so callers rarely need to call it directly.
 
   ## Configuring a store once in an application
 
@@ -26,7 +33,7 @@ defmodule Omni.Session.Store do
 
       # config/config.exs
       config :my_app, MyApp.Sessions,
-        store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions", otp_app: :my_app}
+        store: {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
 
       # everywhere a session is needed
       MyApp.Sessions.create(agent: [...])
@@ -38,7 +45,8 @@ defmodule Omni.Session.Store do
   ## Direct (non-Manager) usage
 
   When sessions are started outside a Manager, the application owns the
-  store tuple. A module attribute is enough for static configuration:
+  store configuration. A module attribute is enough for static
+  configuration:
 
       defmodule MyApp.Storage do
         @store {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
@@ -46,7 +54,6 @@ defmodule Omni.Session.Store do
       end
 
       Omni.Session.start_link(store: MyApp.Storage.store(), new: id, agent: [...])
-      Omni.Session.Store.delete(MyApp.Storage.store(), id)
 
   For environment-specific configuration without a Manager, read the
   tuple from `Application.get_env/3` inside the wrapper.
@@ -74,8 +81,9 @@ defmodule Omni.Session.Store do
 
   ## Implementing an adapter
 
-  Implement `@behaviour Omni.Session.Store` and the six callbacks:
+  Implement `@behaviour Omni.Session.Store` and the seven callbacks:
 
+  - `c:init/1`
   - `c:save_tree/4`
   - `c:save_state/4`
   - `c:load/3`
@@ -83,15 +91,19 @@ defmodule Omni.Session.Store do
   - `c:delete/3`
   - `c:exists?/2`
 
-  Configuration arrives as a `keyword()` (the second element of the
-  store tuple). Adapters are free to validate or destructure it as
-  they prefer.
+  `c:init/1` receives the raw keyword config from the store tuple and
+  returns `{:ok, config_state}` or `{:error, reason}`. The returned
+  `config_state` is what all other callbacks receive as their first
+  argument — it can be a keyword list, map, struct, or any term the
+  adapter prefers.
   """
 
   alias Omni.Session.Tree
 
-  @typedoc "A store is `{adapter_module, config}` — a tagged pair Session threads through calls."
-  @type t :: {module(), keyword()}
+  defstruct [:module, :config]
+
+  @typedoc "An initialised store — a struct pairing the adapter module with its config."
+  @type t :: %__MODULE__{module: module(), config: term()}
 
   @typedoc "Application-assigned session identifier."
   @type session_id :: String.t()
@@ -117,6 +129,18 @@ defmodule Omni.Session.Store do
           created_at: DateTime.t(),
           updated_at: DateTime.t()
         }
+
+  # ── Callbacks ───────────────────────────────────────────────────────
+
+  @doc """
+  Validate and prepare adapter config.
+
+  Receives the raw keyword config from the store tuple. Returns
+  `{:ok, config_state}` where `config_state` is passed as the first
+  argument to all other callbacks, or `{:error, reason}` on invalid
+  config.
+  """
+  @callback init(keyword()) :: {:ok, term()} | {:error, term()}
 
   @doc """
   Persist the tree's nodes, active path, and cursors.
@@ -177,36 +201,75 @@ defmodule Omni.Session.Store do
   """
   @callback exists?(config :: term(), session_id()) :: boolean()
 
-  # Dispatch
+  # ── Init ────────────────────────────────────────────────────────────
+
+  @doc """
+  Initialise a store from one of several input forms.
+
+  Accepts a `{module, keyword}` tuple, a bare module atom (equivalent
+  to `{module, []}`), or an already-initialised `%Store{}` struct
+  (pass-through). Returns `{:ok, %Store{}}` or `{:error, reason}`.
+
+  Called automatically by `Omni.Session.start_link/1` and
+  `Omni.Session.Manager.start_link/1` — most callers don't need to
+  invoke this directly.
+  """
+  @spec init(t() | {module(), keyword()} | module()) :: {:ok, t()} | {:error, term()}
+  def init(%__MODULE__{} = store), do: {:ok, store}
+
+  def init({mod, cfg}) when is_atom(mod) and is_list(cfg) do
+    call_adapter_init(mod, cfg)
+  end
+
+  def init(mod) when is_atom(mod) and not is_nil(mod) do
+    call_adapter_init(mod, [])
+  end
+
+  def init(other), do: {:error, {:invalid_store, other}}
+
+  defp call_adapter_init(mod, cfg) do
+    Code.ensure_loaded(mod)
+
+    if function_exported?(mod, :init, 1) do
+      case mod.init(cfg) do
+        {:ok, config_state} -> {:ok, %__MODULE__{module: mod, config: config_state}}
+        {:error, _} = error -> error
+      end
+    else
+      {:error, {:not_a_store_adapter, mod}}
+    end
+  end
+
+  # ── Dispatch ────────────────────────────────────────────────────────
 
   @doc "Persist the tree via the store's adapter."
   @spec save_tree(t(), session_id(), Tree.t(), keyword()) :: :ok | {:error, term()}
-  def save_tree({mod, cfg}, id, %Tree{} = tree, opts \\ []),
+  def save_tree(%__MODULE__{module: mod, config: cfg}, id, %Tree{} = tree, opts \\ []),
     do: mod.save_tree(cfg, id, tree, opts)
 
   @doc "Persist the state map via the store's adapter."
   @spec save_state(t(), session_id(), state_map(), keyword()) :: :ok | {:error, term()}
-  def save_state({mod, cfg}, id, state, opts \\ []) when is_map(state),
+  def save_state(%__MODULE__{module: mod, config: cfg}, id, state, opts \\ []) when is_map(state),
     do: mod.save_state(cfg, id, state, opts)
 
   @doc "Load a session via the store's adapter."
   @spec load(t(), session_id(), keyword()) ::
           {:ok, Tree.t(), state_map()} | {:error, :not_found}
-  def load({mod, cfg}, id, opts \\ []),
+  def load(%__MODULE__{module: mod, config: cfg}, id, opts \\ []),
     do: mod.load(cfg, id, opts)
 
   @doc "List session summaries via the store's adapter."
   @spec list(t(), keyword()) :: {:ok, [session_info()]}
-  def list({mod, cfg}, opts \\ []),
+  def list(%__MODULE__{module: mod, config: cfg}, opts \\ []),
     do: mod.list(cfg, opts)
 
   @doc "Delete a session via the store's adapter."
   @spec delete(t(), session_id(), keyword()) :: :ok | {:error, term()}
-  def delete({mod, cfg}, id, opts \\ []),
+  def delete(%__MODULE__{module: mod, config: cfg}, id, opts \\ []),
     do: mod.delete(cfg, id, opts)
 
   @doc "Check whether the store holds persisted state for `id`."
   @spec exists?(t(), session_id()) :: boolean()
-  def exists?({mod, cfg}, id),
+  def exists?(%__MODULE__{module: mod, config: cfg}, id),
     do: mod.exists?(cfg, id)
 end

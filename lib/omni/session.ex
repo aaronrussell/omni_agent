@@ -25,7 +25,7 @@ defmodule Omni.Session do
   Every session has an id. Start a new one with `:new` (or omit for an
   auto-generated id), or reopen an existing one with `:load`.
 
-      store = {Omni.Session.Store.FileSystem, base_dir: "priv/sessions"}
+      store = {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
 
       # Fresh session, auto-generated id
       {:ok, session} = Omni.Session.start_link(
@@ -107,8 +107,9 @@ defmodule Omni.Session do
   - `:agent` (required) — `keyword()` or `{module(), keyword()}`.
     Agent start options; the optional module is a callback module
     that `use Omni.Agent`.
-  - `:store` (required) — `{module(), keyword()}` — a
-    `Omni.Session.Store` adapter and its config.
+  - `:store` (required) — an `Omni.Session.Store` adapter. Accepts a
+    `{module, keyword}` tuple, a bare module, or an already-initialised
+    `%Omni.Session.Store{}` struct. See `Omni.Session.Store.init/1`.
   - `:title` — initial title string. Applied on `:new` only; ignored
     on `:load` (persisted title wins).
   - `:subscribe` — if `true`, subscribes the caller to session events
@@ -497,6 +498,8 @@ defmodule Omni.Session do
     caller = hd(callers)
 
     with :ok <- validate_opts(opts),
+         {:ok, store} <- Store.init(opts[:store]),
+         opts = Keyword.put(opts, :store, store),
          {:ok, id, mode} <- resolve_mode(opts),
          {:ok, tree, title, persistable, agent_opts} <- prepare(mode, id, opts),
          {:ok, agent_pid} <- start_agent(opts[:agent], agent_opts, id) do
@@ -505,7 +508,7 @@ defmodule Omni.Session do
           id: id,
           title: title,
           tree: tree,
-          store: opts[:store],
+          store: store,
           agent: agent_pid,
           idle_shutdown_after: Keyword.get(opts, :idle_shutdown_after),
           last_persisted_state: persistable

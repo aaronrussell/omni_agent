@@ -14,7 +14,7 @@ defmodule Omni.Session.Manager do
 
       # config/config.exs
       config :my_app, MyApp.Sessions,
-        store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions", otp_app: :my_app}
+        store: {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
 
       # application.ex
       children = [MyApp.Sessions]
@@ -71,9 +71,11 @@ defmodule Omni.Session.Manager do
   start-opts → `Application.get_env(otp_app, ManagerModule, [])` → the
   defaults below.
 
-    * `:store` — **required**. `{module, keyword()}` — the store adapter
-      tuple. Used by every session this Manager starts, and by `list/2`
-      and `delete/2`.
+    * `:store` — **required**. An `Omni.Session.Store` adapter —
+      `{module, keyword}` tuple, bare module, or `%Store{}` struct.
+      Used by every session this Manager starts, and by `list/2`
+      and `delete/2`. Initialised via `Omni.Session.Store.init/1` at
+      supervisor boot.
     * `:idle_shutdown_after` — `nil | non_neg_integer()`. Default for
       sessions this Manager starts; overridden per-call. Defaults to
       `300_000` (5 minutes) when absent. Pass `nil` to disable
@@ -102,6 +104,7 @@ defmodule Omni.Session.Manager do
 
   alias Omni.Session
   alias Omni.Session.Manager.Tracker
+  alias Omni.Session.Store
 
   @type manager :: module()
   @type id :: Session.Store.session_id()
@@ -237,13 +240,15 @@ defmodule Omni.Session.Manager do
 
   defp fetch_store!(opts) do
     case Keyword.fetch(opts, :store) do
-      {:ok, {mod, cfg}} when is_atom(mod) and is_list(cfg) ->
-        {mod, cfg}
+      {:ok, raw_store} ->
+        case Store.init(raw_store) do
+          {:ok, %Store{} = store} ->
+            store
 
-      {:ok, other} ->
-        raise ArgumentError,
-              "#{inspect(__MODULE__)} :store must be a " <>
-                "`{module, keyword()}` tuple, got: #{inspect(other)}"
+          {:error, reason} ->
+            raise ArgumentError,
+                  "#{inspect(__MODULE__)} :store init failed: #{inspect(reason)}"
+        end
 
       :error ->
         raise ArgumentError,
