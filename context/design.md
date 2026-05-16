@@ -793,7 +793,7 @@ accepts a `{module, keyword}` tuple, a bare module, or an
 already-initialised struct (pass-through):
 
 ```elixir
-{:ok, store} = Omni.Session.Store.init({Omni.Session.Store.FileSystem, base_dir: "/data/sessions"})
+{:ok, store} = Omni.Session.Store.init({Omni.Session.Stores.FileSystem, base_dir: "/data/sessions"})
 Omni.Session.Store.delete(store, "abc")
 ```
 
@@ -918,7 +918,7 @@ end
 # application.ex
 children = [
   {MyApp.Sessions,
-     store: {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}}
+     store: {Omni.Session.Stores.FileSystem, base_dir: "/var/data/sessions"}}
 ]
 ```
 

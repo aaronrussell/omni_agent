@@ -161,7 +161,7 @@ persisted through a store adapter. Reopening by id restores everything.
 ### Start and persist
 
 ```elixir
-store = {Omni.Session.Store.FileSystem, base_dir: "priv/sessions"}
+store = {Omni.Session.Stores.FileSystem, base_dir: "priv/sessions"}
 
 {:ok, session} = Omni.Session.start_link(
   agent: [model: {:anthropic, "claude-sonnet-4-6"}],
@@ -236,7 +236,7 @@ end
 # application.ex
 children = [
   {MyApp.Sessions,
-     store: {Omni.Session.Store.FileSystem, base_dir: "priv/sessions"}}
+     store: {Omni.Session.Stores.FileSystem, base_dir: "priv/sessions"}}
 ]
 ```
 

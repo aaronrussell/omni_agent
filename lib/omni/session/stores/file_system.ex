@@ -1,4 +1,4 @@
-defmodule Omni.Session.Store.FileSystem do
+defmodule Omni.Session.Stores.FileSystem do
   @moduledoc """
   Reference `Omni.Session.Store` adapter using plain files on disk.
 
@@ -29,13 +29,13 @@ defmodule Omni.Session.Store.FileSystem do
 
   Example:
 
-      {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
+      {Omni.Session.Stores.FileSystem, base_dir: "/var/data/sessions"}
 
   For paths relative to an OTP application's install directory, resolve
   them before constructing the store:
 
       base = Application.app_dir(:my_app, "priv/sessions")
-      {Omni.Session.Store.FileSystem, base_dir: base}
+      {Omni.Session.Stores.FileSystem, base_dir: base}
 
   ## Encoding
 

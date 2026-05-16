@@ -25,7 +25,7 @@ defmodule Omni.Session do
   Every session has an id. Start a new one with `:new` (or omit for an
   auto-generated id), or reopen an existing one with `:load`.
 
-      store = {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
+      store = {Omni.Session.Stores.FileSystem, base_dir: "/var/data/sessions"}
 
       # Fresh session, auto-generated id
       {:ok, session} = Omni.Session.start_link(

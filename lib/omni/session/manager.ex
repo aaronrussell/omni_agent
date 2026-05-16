@@ -14,7 +14,7 @@ defmodule Omni.Session.Manager do
 
       # config/config.exs
       config :my_app, MyApp.Sessions,
-        store: {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
+        store: {Omni.Session.Stores.FileSystem, base_dir: "/var/data/sessions"}
 
       # application.ex
       children = [MyApp.Sessions]

@@ -1,11 +1,11 @@
-defmodule Omni.Session.Store.FileSystemTest do
+defmodule Omni.Session.Stores.FileSystemTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
 
   alias Omni.{Message, Usage}
   alias Omni.Session.Tree
-  alias Omni.Session.Store.FileSystem
+  alias Omni.Session.Stores.FileSystem
 
   @moduletag :tmp_dir
 

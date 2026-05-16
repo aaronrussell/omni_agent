@@ -64,7 +64,7 @@ lib/omni/
 ├── session.ex                     # public: Session GenServer + API
 ├── session/{snapshot,tree}.ex     # public
 ├── session/store.ex               # adapter behaviour + dispatch
-├── session/store/file_system.ex   # reference adapter
+├── session/stores/file_system.ex  # reference adapter
 ├── session/manager.ex             # Supervisor + use macro + API
 └── session/manager/tracker.ex     # internal (@moduledoc false)
 ```

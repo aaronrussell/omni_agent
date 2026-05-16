@@ -78,16 +78,16 @@ tested, and a suggested approach. Pick any and run with it.
 **Gap:** Only the list form is tested; source explicitly handles `is_map(nodes)` too. One trivial round-trip test.
 
 ### FileSystem `encode_state` schema enforcement
-**File:** `test/omni/session/store/file_system_test.exs`.
+**File:** `test/omni/session/stores/file_system_test.exs`.
 **Invariant:** Unknown keys are silently dropped; non-list `:opts` is silently dropped. Documented contract; no negative test.
 **Approach:** Call `save_state(cfg, id, %{title: "t", garbage: "x"})` and assert the persisted `session.json` has no `"garbage"` key. Same for `:opts` being a non-list.
 
 ### FileSystem: partial-but-non-empty `session.json` degrades to `:not_found`
-**File:** `test/omni/session/store/file_system_test.exs` `durability` describe.
+**File:** `test/omni/session/stores/file_system_test.exs` `durability` describe.
 **Gap:** Only the empty-file case is tested. A real torn write leaves `{"path":[1,2` or similar. `read_session_json` rescues all exceptions, so this should degrade the same way — but no test confirms it.
 
 ### FileSystem: `decode_model` tolerates unknown provider atom
-**File:** `test/omni/session/store/file_system_test.exs`.
+**File:** `test/omni/session/stores/file_system_test.exs`.
 **Invariant:** `String.to_existing_atom` can raise. The load path is supposed to be tolerant. Currently untested.
 **Approach:** Write a `session.json` by hand with `"model": ["unknown_provider", "x"]` and call `load/2`. Confirm it either returns a sensible error tuple or gracefully skips the model field — whichever the current behaviour is, pin it.
 
@@ -191,7 +191,7 @@ These were deferred from Pattern C because they need new fixtures or a structura
 
 - `test/omni/agent/steering_test.exs` — 6 remaining `stub_slow + Process.sleep(50)` patterns (in the `prompt while running` pair and the `cancel` describe block) not covered by the main sleep cleanup. Migrate to receive-gated stubs for consistency.
 - `test/omni/agent/ordering_test.exs:89` — `Process.sleep(250)` for tool-ordering differential; bumped from 100 ms but still sleep-based. Replace with a receive/send handshake between the two tool handlers when a cleaner pattern surfaces.
-- `test/omni/session/store/file_system_test.exs` — five `Process.sleep(50)` for `updated_at` ordering. Interim; real fix is clock injection.
+- `test/omni/session/stores/file_system_test.exs` — five `Process.sleep(50)` for `updated_at` ordering. Interim; real fix is clock injection.
 - `test/support/failing_store.ex` — module is `Omni.Session.Store.Failing` but file is `failing_store.ex`. Minor naming nit.
 - `test/omni/session/store_test.exs` — dispatch tests assert `:ok` / `false` against a hardcoded `EchoAdapter`. The leading match is decorative; the real assertion is `assert_received`. Drop the leading match for clarity.
 - `test/omni/session/store_test.exs:119-123` — `Store.exists?/2` only tests the `false` branch. Add the `true` branch for symmetry.

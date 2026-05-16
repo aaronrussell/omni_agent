@@ -10,10 +10,10 @@ defmodule Omni.Session.Store do
   convenience forms:
 
       # Tuple — the most common form in config files
-      {:ok, store} = Omni.Session.Store.init({Omni.Session.Store.FileSystem, base_dir: "/data/sessions"})
+      {:ok, store} = Omni.Session.Store.init({Omni.Session.Stores.FileSystem, base_dir: "/data/sessions"})
 
       # Bare module — equivalent to {mod, []}
-      {:ok, store} = Omni.Session.Store.init(Omni.Session.Store.FileSystem)
+      {:ok, store} = Omni.Session.Store.init(Omni.Session.Stores.FileSystem)
 
       # Already-initialised struct — pass-through
       {:ok, ^store} = Omni.Session.Store.init(store)
@@ -33,7 +33,7 @@ defmodule Omni.Session.Store do
 
       # config/config.exs
       config :my_app, MyApp.Sessions,
-        store: {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
+        store: {Omni.Session.Stores.FileSystem, base_dir: "/var/data/sessions"}
 
       # everywhere a session is needed
       MyApp.Sessions.create(agent: [...])
@@ -49,7 +49,7 @@ defmodule Omni.Session.Store do
   configuration:
 
       defmodule MyApp.Storage do
-        @store {Omni.Session.Store.FileSystem, base_dir: "/var/data/sessions"}
+        @store {Omni.Session.Stores.FileSystem, base_dir: "/var/data/sessions"}
         def store, do: @store
       end
 

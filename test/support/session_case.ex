@@ -7,7 +7,7 @@ defmodule Omni.Session.SessionCase do
     quote do
       alias Omni.Session
       alias Omni.Session.{Snapshot, Store, Tree}
-      alias Omni.Session.Store.FileSystem
+      alias Omni.Session.Stores.FileSystem
       alias Omni.{Context, Message, Response, Usage}
       alias Omni.Content.{Text, ToolResult, ToolUse}
 

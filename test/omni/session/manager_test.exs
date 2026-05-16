@@ -2,7 +2,7 @@ defmodule Omni.Session.ManagerTest do
   use Omni.Session.SessionCase, async: true
 
   alias Omni.Session.Manager
-  alias Omni.Session.Store.FileSystem
+  alias Omni.Session.Stores.FileSystem
 
   @moduletag :tmp_dir
 
