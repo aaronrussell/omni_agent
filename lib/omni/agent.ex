@@ -1,5 +1,7 @@
 defmodule Omni.Agent do
   @moduledoc """
+  ![License](https://img.shields.io/github/license/aaronrussell/omni_agent?color=informational)
+
   **Stateful LLM agents for Elixir** — persistent, branching conversations,
   tool approval, steering, and multi-session management.
   Built on [Omni](https://github.com/aaronrussell/omni).

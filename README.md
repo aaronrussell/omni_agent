@@ -1,5 +1,9 @@
 # Omni Agent
 
+![Hex.pm](https://img.shields.io/hexpm/v/omni_agent?color=informational)
+![License](https://img.shields.io/github/license/aaronrussell/omni_agent?color=informational)
+![Build Status](https://img.shields.io/github/actions/workflow/status/aaronrussell/omni_agent/elixir.yml?branch=main)
+
 **Stateful LLM agents for Elixir** — persistent, branching conversations, tool approval, steering, and multi-session management. Built on [Omni](https://github.com/aaronrussell/omni).
 
 ## Features
