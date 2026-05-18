@@ -16,7 +16,15 @@ defmodule Omni.Session.PersistenceTest do
       store_idx = Enum.find_index(events, &match?({:store, {:saved, :tree}}, &1))
 
       assert turn_idx < tree_idx
-      assert tree_idx < store_idx
+
+      # :store {:saved, :tree} may trail the flush window when disk I/O
+      # (fsync) is slow (e.g. CI virtual disks). If it wasn't collected,
+      # wait for it explicitly so the filesystem read below is safe.
+      if is_nil(store_idx) do
+        assert_receive {:session, ^session, :store, {:saved, :tree}}, 2000
+      else
+        assert tree_idx < store_idx
+      end
 
       {:tree, %{tree: tree, new_nodes: ids}} = Enum.at(events, tree_idx)
       assert Tree.size(tree) == 2
