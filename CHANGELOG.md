@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-18
+
 ### Changed
 
 - **`Omni.Session.Store` is now a struct** — stores are initialised via `Store.init/1` (accepts `{module, keyword}`, a bare module, or an already-initialised `%Store{}`). `Session.start_link/1` and `Manager.start_link/1` call `init/1` internally, so callers can still pass tuples. Adapters must implement the new `c:init/1` callback.
@@ -77,7 +79,8 @@ The agent internals were simplified — the loop hierarchy was flattened from th
 
 ---
 
-[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.4.0
 [0.3.1]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.3.1
 [0.3.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.3.0
 [0.2.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.2.0

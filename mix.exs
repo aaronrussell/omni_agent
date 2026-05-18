@@ -1,7 +1,7 @@
 defmodule Omni.Agent.MixProject do
   use Mix.Project
 
-  @version "0.3.1"
+  @version "0.4.0"
   @source_url "https://github.com/aaronrussell/omni_agent"
 
   def project do
@@ -34,7 +34,7 @@ defmodule Omni.Agent.MixProject do
       {:omni, "~> 1.3"},
 
       # dev dependencies
-      {:ex_doc, "~> 0.40.1", only: :dev, runtime: false, warn_if_outdated: true},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false, warn_if_outdated: true},
       {:plug, "~> 1.0", only: :test}
     ]
   end
