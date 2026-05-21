@@ -566,6 +566,7 @@ defmodule Omni.Agent.Server do
 
   defp spawn_executor(approved_uses, server) do
     ref = make_ref()
+    timeout = resolve_tool_timeout(server.tool_timeout, approved_uses)
 
     {:ok, pid} =
       Omni.Agent.Executor.start_link(
@@ -573,10 +574,18 @@ defmodule Omni.Agent.Server do
         ref,
         approved_uses,
         server.tool_map,
-        server.tool_timeout
+        timeout
       )
 
     %{server | executor_task: {pid, ref}}
+  end
+
+  defp resolve_tool_timeout(timeout, _tool_uses) when is_integer(timeout), do: timeout
+
+  defp resolve_tool_timeout(timeout, tool_uses) when is_function(timeout, 1) do
+    tool_uses
+    |> Enum.map(&timeout.(&1.name))
+    |> Enum.max()
   end
 
   # -- Tool execution results --

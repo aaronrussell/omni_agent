@@ -267,8 +267,8 @@ Start options of note:
 
 - `:model` (required), `:system`, `:messages`, `:tools`, `:opts`,
   `:private`
-- `:tool_timeout` (default 5000ms) — per-tool execution timeout,
-  applied uniformly
+- `:tool_timeout` (default 5000ms) — tool execution timeout. Integer
+  or 1-arity function `(tool_name -> timeout)` for per-tool values
 - `:subscribe` (boolean) / `:subscribers` (list of pids)
 - GenServer keys (`:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`,
   `:debug`) are extracted from the flat opt list and passed to

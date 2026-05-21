@@ -104,7 +104,9 @@ defmodule Omni.Agent do
     `Omni.Agent.State`
   - `:subscribe` — if `true`, subscribes the caller to agent events
   - `:subscribers` — list of pids to subscribe to agent events
-  - `:tool_timeout` — per-tool execution timeout in ms (default `5_000`)
+  - `:tool_timeout` — tool execution timeout. Either an integer in ms
+    (applied to all tools) or a 1-arity function receiving the tool name
+    and returning a timeout — the batch uses the maximum. Default `5_000`
   - `:opts` — inference options passed to `stream_text` each step
     (`:temperature`, `:max_tokens`, `:max_steps`, etc.)
   - `:name`, `:timeout`, `:hibernate_after`, `:spawn_opt`, `:debug` —

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Changed
+
+- **`:tool_timeout` accepts a function** — pass a 1-arity function receiving the tool name to set per-tool timeouts. The batch uses the maximum across all tools. Integer values continue to work as before.
+
 ## [0.4.0] - 2026-05-18
 
 ### Changed

@@ -182,6 +182,67 @@ defmodule Omni.Agent.ToolTest do
       # Loop continues to final response
       assert {:turn, {:stop, %Response{}}} = List.last(events)
     end
+
+    test "function form gives per-tool timeout, tool succeeds" do
+      slow_tool =
+        Omni.tool(
+          name: "get_weather",
+          description: "Gets the weather",
+          input_schema: %{type: "object", properties: %{location: %{type: "string"}}},
+          handler: fn _input ->
+            Process.sleep(200)
+            "72F and sunny"
+          end
+        )
+
+      {:ok, agent} =
+        start_agent(
+          tools: [slow_tool],
+          tool_timeout: fn
+            "get_weather" -> 2_000
+            _ -> 50
+          end,
+          fixtures: [@tool_use_fixture, @text_fixture]
+        )
+
+      :ok = Agent.prompt(agent, "What's the weather?")
+      events = collect_events(agent)
+
+      tool_result_events = for {:tool_result, data} <- events, do: data
+      assert length(tool_result_events) == 1
+      refute hd(tool_result_events).is_error
+
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
+    end
+
+    test "function form times out tool with short timeout" do
+      slow_tool =
+        Omni.tool(
+          name: "get_weather",
+          description: "Gets the weather",
+          input_schema: %{type: "object", properties: %{location: %{type: "string"}}},
+          handler: fn _input ->
+            Process.sleep(5000)
+            "result"
+          end
+        )
+
+      {:ok, agent} =
+        start_agent(
+          tools: [slow_tool],
+          tool_timeout: fn _name -> 100 end,
+          fixtures: [@tool_use_fixture, @text_fixture]
+        )
+
+      :ok = Agent.prompt(agent, "What's the weather?")
+      events = collect_events(agent)
+
+      tool_result_events = for {:tool_result, data} <- events, do: data
+      assert length(tool_result_events) > 0
+      assert Enum.any?(tool_result_events, & &1.is_error)
+
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
+    end
   end
 
   describe "usage in response" do
