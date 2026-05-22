@@ -63,10 +63,13 @@ lib/omni/
 ├── agent/{server,step,executor}.ex # internal (@moduledoc false)
 ├── session.ex                     # public: Session GenServer + API
 ├── session/{snapshot,tree}.ex     # public
+├── session/title.ex               # public: pure title generation
 ├── session/store.ex               # adapter behaviour + dispatch
 ├── session/stores/file_system.ex  # reference adapter
 ├── session/manager.ex             # Supervisor + use macro + API
-└── session/manager/tracker.ex     # internal (@moduledoc false)
+└── session/manager/
+    ├── tracker.ex                 # internal (@moduledoc false)
+    └── title_service.ex           # internal (@moduledoc false)
 ```
 
 ## Conventions
@@ -149,7 +152,7 @@ halt Session; they only emit `:store {:error, _, _}`.
 - Public modules have `@moduledoc` + `@typedoc` / `@doc` / `@spec` on
   all public surfaces.
 - Internal modules (`Agent.Server`, `Agent.Step`, `Agent.Executor`,
-  `Manager.Tracker`) are `@moduledoc false`.
+  `Manager.Tracker`, `Manager.TitleService`) are `@moduledoc false`.
 - Doc tone: practical over theoretical, concise, example-driven for
   key APIs. Lead with what you do, not what things are. Rely on
   `@spec` for types — don't repeat type info in prose.

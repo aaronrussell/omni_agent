@@ -78,7 +78,8 @@ A running session under a manager looks like:
   │                 ├── Omni.Agent.Step     (linked Task, per step)
   │                 └── Omni.Agent.Executor (linked Task, per tool batch)
   │                       └── Tool Tasks (one per tool, from Tool.Runner)
-  └── MyApp.Sessions.Tracker (GenServer, :observer-subscribes each session)
+  ├── MyApp.Sessions.Tracker (GenServer, :observer-subscribes each session)
+  └── MyApp.Sessions.TitleService (GenServer, conditional on title_generator)
 ```
 
 The Agent GenServer never blocks on IO. All blocking work lives in
@@ -962,7 +963,8 @@ losing their view of `:store` / `:idle_shutdown_after`.
 ```elixir
 {MyApp.Sessions,
    store: {...},                         # required
-   idle_shutdown_after: 300_000}          # default
+   idle_shutdown_after: 300_000,         # default
+   title_generator: :heuristic}          # default
 ```
 
 - `:store` (required) — `{module, keyword()}`, injected into every
@@ -970,6 +972,13 @@ losing their view of `:store` / `:idle_shutdown_after`.
 - `:idle_shutdown_after` — `non_neg_integer() | nil`, default
   `300_000`. Passes through to each session; caller can override
   per-call. Pass `nil` to disable manager-wide.
+- `:title_generator` — controls automatic title generation for
+  untitled sessions. `:heuristic` (default) truncates the first user
+  message; a model ref (e.g. `{:anthropic, "claude-haiku-4-5"}`) uses
+  the given model; `{model_ref, opts}` passes opts through to
+  `Omni.generate_text/3`; `false` disables. When enabled, the Manager
+  starts an internal TitleService GenServer that observes sessions and
+  generates titles on first turn completion.
 - `:name` — overrides the registered name; defaults to the `use`-ing
   module.
 
@@ -990,6 +999,7 @@ Manager.open(manager, id, opts \\ []) :: {:ok, pid, :started | :existing}
                                        | {:error, term}
 Manager.close(manager, id)            :: :ok                   # idempotent
 Manager.delete(manager, id)           :: :ok | {:error, term}  # stop then Store.delete
+Manager.rename(manager, id, title)    :: :ok | {:error, :not_found | term}
 
 # Discovery
 Manager.whereis(manager, id)          :: pid | nil             # Registry lookup
@@ -1108,14 +1118,17 @@ lib/omni/
 │   ├── store.ex                   # adapter behaviour + dispatch
 │   ├── store/
 │   │   └── file_system.ex         # reference FileSystem adapter
+│   ├── title.ex                   # public: pure title generation
 │   ├── manager.ex                 # Supervisor + use macro + API
 │   └── manager/
-│       └── tracker.ex             # internal Tracker  (@moduledoc false)
+│       ├── tracker.ex             # internal Tracker  (@moduledoc false)
+│       └── title_service.ex       # internal TitleService (@moduledoc false)
 ```
 
 Public modules have `@moduledoc` + public `@typedoc` / `@doc` /
 `@spec`. Internal modules (`Agent.Server`, `Agent.Step`,
-`Agent.Executor`, `Manager.Tracker`) carry `@moduledoc false`.
+`Agent.Executor`, `Manager.Tracker`, `Manager.TitleService`) carry
+`@moduledoc false`.
 
 ---
 
@@ -1154,8 +1167,6 @@ Deliberately out of scope; all tracked in `context/roadmap.md`:
 - **`:data` field on Agent state** — app-defined per-session metadata.
   Agent, not Session, to benefit plain-Agent users too. Deferred until
   a concrete consumer surfaces.
-- **Title auto-generation helpers** — sugar over the
-  subscribe-and-set pattern.
 - **Store retry / write-behind queue** for high-latency adapters.
 - **Persistent event log / replay** across process restarts.
 - **Distributed Manager** — cross-node Registry and Tracker.

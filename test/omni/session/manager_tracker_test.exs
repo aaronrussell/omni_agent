@@ -135,10 +135,14 @@ defmodule Omni.Session.ManagerTrackerTest do
 
     test "is idempotent per pid", %{manager: m} do
       {:ok, []} = Manager.subscribe(m)
+
+      before_size =
+        m |> tracker_pid() |> :sys.get_state() |> Map.fetch!(:subscribers) |> MapSet.size()
+
       {:ok, []} = Manager.subscribe(m)
 
       tracker_state = :sys.get_state(tracker_pid(m))
-      assert MapSet.size(tracker_state.subscribers) == 1
+      assert MapSet.size(tracker_state.subscribers) == before_size
       assert MapSet.member?(tracker_state.subscribers, self())
     end
 

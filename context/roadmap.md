@@ -24,13 +24,14 @@ Agent, Session, Store, and Manager is documented in
 Open questions worth exploring before committing to a shape. Not
 scheduled.
 
-- **Callback-driven title generation.** Rather than an `auto_title:`
-  sugar helper, explore a pattern where the Agent produces the title
-  from inside a callback and the Session picks it up for persistence.
-  The blocker is that callbacks currently have no clean way to emit
-  structured values back up the stack — solving that might want a
-  generic callback-side event-emission API, which is itself a broader
-  design question worth its own exploration.
+- **Callback-driven title generation.** The Manager now ships a
+  TitleService (`:title_generator` opt) covering heuristic and
+  LLM-based generation. This item explored an alternative where the
+  Agent produces the title from inside a callback and the Session
+  picks it up for persistence. The blocker is that callbacks currently
+  have no clean way to emit structured values back up the stack —
+  solving that might want a generic callback-side event-emission API,
+  which is itself a broader design question worth its own exploration.
 
 - **`init/1` returning an initial prompt.** An extended `init/1` return
   (or `:prompt` start option) that puts the agent straight into

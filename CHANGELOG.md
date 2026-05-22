@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **`Manager.rename/3`** — set a session's title by id, whether the session is running or only in the store.
+- **Automatic title generation** — the Manager now starts a `TitleService` that auto-generates titles for untitled sessions after their first turn. Controlled via the `:title_generator` option: `:heuristic` (default) truncates the first message, a model ref (e.g. `{:anthropic, "claude-haiku-4-5"}`) uses an LLM, and `false` disables it. See `Omni.Session.Title` for the underlying generation logic.
+
 ### Changed
 
 - **`:tool_timeout` accepts a function** — pass a 1-arity function receiving the tool name to set per-tool timeouts. The batch uses the maximum across all tools. Integer values continue to work as before.

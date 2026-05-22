@@ -43,6 +43,10 @@ defmodule Omni.Session.Manager.Tracker do
     GenServer.call(tracker, {:add, id, pid})
   end
 
+  def broadcast_title(tracker, id, title) do
+    GenServer.cast(tracker, {:broadcast_title, id, title})
+  end
+
   # ── GenServer ──────────────────────────────────────────────────────
 
   @impl true
@@ -104,6 +108,12 @@ defmodule Omni.Session.Manager.Tracker do
 
   def handle_call({:unsubscribe, pid}, _from, state) do
     {:reply, :ok, drop_subscriber(state, pid)}
+  end
+
+  @impl true
+  def handle_cast({:broadcast_title, id, title}, state) do
+    broadcast(state, :title, %{id: id, title: title})
+    {:noreply, state}
   end
 
   @impl true

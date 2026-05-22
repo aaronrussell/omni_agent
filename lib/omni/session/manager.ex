@@ -38,7 +38,8 @@ defmodule Omni.Session.Manager do
       MyApp.Sessions (Supervisor, :rest_for_one)
       ├── MyApp.Sessions.Registry (Registry, keys: :unique)
       ├── MyApp.Sessions.DynamicSupervisor (DynamicSupervisor)
-      └── MyApp.Sessions.Tracker (GenServer)
+      ├── MyApp.Sessions.Tracker (GenServer)
+      └── MyApp.Sessions.TitleService (GenServer, when title_generator ≠ false)
 
   Sessions live under the DynamicSupervisor with `restart: :temporary` —
   on crash they do not auto-restart. The Registry maps session ids to
@@ -80,6 +81,16 @@ defmodule Omni.Session.Manager do
       sessions this Manager starts; overridden per-call. Defaults to
       `300_000` (5 minutes) when absent. Pass `nil` to disable
       Manager-wide.
+    * `:title_generator` — controls automatic title generation for
+      untitled sessions. Accepts:
+      - `:heuristic` (default) — truncates the first user message.
+      - `{:provider, "model-id"}` — uses the given model for
+        LLM-based generation (e.g. `{:anthropic, "claude-haiku-4-5"}`).
+      - `{{:provider, "model-id"}, opts}` — same, with keyword opts
+        passed through to `Omni.generate_text/3` (e.g. `:api_key`).
+      - `false` — disables auto-titling entirely.
+
+      See `Omni.Session.Title` for generation details.
     * `:name` — overrides the registered name. Defaults to the `use`-ing
       module.
 
@@ -157,6 +168,9 @@ defmodule Omni.Session.Manager do
       def delete(id),
         do: Omni.Session.Manager.delete(__MODULE__, id)
 
+      def rename(id, title),
+        do: Omni.Session.Manager.rename(__MODULE__, id, title)
+
       def whereis(id),
         do: Omni.Session.Manager.whereis(__MODULE__, id)
 
@@ -211,17 +225,20 @@ defmodule Omni.Session.Manager do
     name = fetch_name!(opts)
     store = fetch_store!(opts)
     idle = fetch_idle_shutdown_after!(opts)
+    {title_gen, title_opts} = fetch_title_generator!(opts)
 
     :persistent_term.put(config_key(name), %{
       store: store,
-      idle_shutdown_after: idle
+      idle_shutdown_after: idle,
+      title_generator: title_gen
     })
 
-    children = [
-      {Registry, keys: :unique, name: registry_name(name)},
-      {DynamicSupervisor, name: dynsup_name(name), strategy: :one_for_one},
-      {Tracker, name: tracker_name(name), manager: name, registry: registry_name(name)}
-    ]
+    children =
+      [
+        {Registry, keys: :unique, name: registry_name(name)},
+        {DynamicSupervisor, name: dynsup_name(name), strategy: :one_for_one},
+        {Tracker, name: tracker_name(name), manager: name, registry: registry_name(name)}
+      ] ++ title_service_child(name, title_gen, title_opts)
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
@@ -273,9 +290,44 @@ defmodule Omni.Session.Manager do
     end
   end
 
+  defp fetch_title_generator!(opts) do
+    case Keyword.get(opts, :title_generator, :heuristic) do
+      false ->
+        {false, []}
+
+      :heuristic ->
+        {:heuristic, []}
+
+      {provider, model_id} when is_atom(provider) and is_binary(model_id) ->
+        {{provider, model_id}, []}
+
+      {{provider, model_id}, title_opts}
+      when is_atom(provider) and is_binary(model_id) and is_list(title_opts) ->
+        {{provider, model_id}, title_opts}
+
+      other ->
+        raise ArgumentError,
+              "#{inspect(__MODULE__)} :title_generator must be false, :heuristic, " <>
+                "a model ref, or {model_ref, opts}, got: #{inspect(other)}"
+    end
+  end
+
+  defp title_service_child(_name, false, _title_opts), do: []
+
+  defp title_service_child(name, title_generator, title_opts) do
+    [
+      {Omni.Session.Manager.TitleService,
+       name: title_service_name(name),
+       manager: name,
+       title_generator: title_generator,
+       title_opts: title_opts}
+    ]
+  end
+
   defp registry_name(name), do: Module.concat(name, Registry)
   defp dynsup_name(name), do: Module.concat(name, DynamicSupervisor)
   defp tracker_name(name), do: Module.concat(name, "Tracker")
+  defp title_service_name(name), do: Module.concat(name, "TitleService")
   defp config_key(name), do: {__MODULE__, name}
   defp config(manager), do: :persistent_term.get(config_key(manager))
 
@@ -401,6 +453,51 @@ defmodule Omni.Session.Manager do
   def delete(manager, id) when is_atom(manager) and is_binary(id) do
     :ok = close(manager, id)
     Session.Store.delete(config(manager).store, id)
+  end
+
+  @doc """
+  Sets the title of a session by id.
+
+  If the session is running, delegates to `Omni.Session.set_title/2` —
+  the session handles persistence and event emission as usual.
+
+  If the session exists only in the store, updates the title directly
+  and emits a `:title` event to Manager subscribers.
+
+  Returns `{:error, :not_found}` when the session doesn't exist
+  anywhere (neither running nor persisted).
+  """
+  @spec rename(manager(), id(), String.t() | nil) :: :ok | {:error, :not_found | term()}
+  def rename(manager, id, title)
+      when is_atom(manager) and is_binary(id) and (is_binary(title) or is_nil(title)) do
+    case whereis(manager, id) do
+      pid when is_pid(pid) ->
+        try do
+          Session.set_title(pid, title)
+        catch
+          :exit, _ -> rename_in_store(manager, id, title)
+        end
+
+      nil ->
+        rename_in_store(manager, id, title)
+    end
+  end
+
+  defp rename_in_store(manager, id, title) do
+    cfg = config(manager)
+
+    if Store.exists?(cfg.store, id) do
+      case Store.save_state(cfg.store, id, %{title: title}) do
+        :ok ->
+          Tracker.broadcast_title(tracker_name(manager), id, title)
+          :ok
+
+        {:error, _} = error ->
+          error
+      end
+    else
+      {:error, :not_found}
+    end
   end
 
   @doc "Registry lookup — returns the session pid for `id`, or `nil`."
