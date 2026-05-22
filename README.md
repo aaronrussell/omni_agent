@@ -22,7 +22,7 @@ Add Omni Agent to your dependencies:
 ```elixir
 def deps do
   [
-    {:omni_agent, "~> 0.4"}
+    {:omni_agent, "~> 0.5"}
   ]
 end
 ```

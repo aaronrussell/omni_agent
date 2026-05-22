@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-22
+
 ### Added
 
 - **`Manager.rename/3`** — set a session's title by id, whether the session is running or only in the store.
@@ -88,7 +90,8 @@ The agent internals were simplified — the loop hierarchy was flattened from th
 
 ---
 
-[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aaronrussell/omni_agent/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.5.0
 [0.4.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.4.0
 [0.3.1]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.3.1
 [0.3.0]: https://github.com/aaronrussell/omni_agent/releases/tag/v0.3.0
