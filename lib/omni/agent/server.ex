@@ -52,8 +52,9 @@ defmodule Omni.Agent.Server do
     #   — user/assistant pairs.
     # turn_usage: accumulated usage for the current turn across all steps.
     # prompt_opts: merged opts for the current turn (state.opts + call-site opts).
-    # next_prompt: staged {content, opts} tuple, set when prompt/3 is called
-    #   while running/paused.
+    # next_prompt: staged {%Message{}, opts} tuple, set when prompt/3 is
+    #   called while running/paused. Content is normalized to a user
+    #   message at call time, so the timestamp reflects submission.
     # partial_message: current streaming assistant message, or nil. Updated
     #   from Step events; cleared on :message emission and reset_turn.
     step_message: nil,
@@ -158,8 +159,10 @@ defmodule Omni.Agent.Server do
         _from,
         %__MODULE__{state: %{status: :idle}} = server
       ) do
-    server = start_turn(content, opts, server)
-    {:reply, :ok, server}
+    case normalize_prompt(content) do
+      {:ok, message} -> {:reply, :ok, start_turn(message, opts, server)}
+      {:error, _} = error -> {:reply, error, server}
+    end
   end
 
   def handle_call(
@@ -168,7 +171,10 @@ defmodule Omni.Agent.Server do
         %__MODULE__{state: %{status: status}} = server
       )
       when status in [:busy, :paused] do
-    {:reply, :ok, %{server | next_prompt: {content, opts}}}
+    case normalize_prompt(content) do
+      {:ok, message} -> {:reply, :ok, %{server | next_prompt: {message, opts}}}
+      {:error, _} = error -> {:reply, error, server}
+    end
   end
 
   def handle_call({:resume, decision}, _from, %__MODULE__{state: %{status: :paused}} = server) do
@@ -398,8 +404,15 @@ defmodule Omni.Agent.Server do
 
   # -- Turn start --
 
-  defp start_turn(content, opts, server) do
-    user_message = Message.new(role: :user, content: content)
+  # Normalizes prompt content into the turn's user message. A ready-made
+  # user %Message{} passes through intact (:private and :timestamp
+  # preserved); strings and content-block lists are wrapped. Non-user
+  # messages are rejected — a turn must start with user content.
+  defp normalize_prompt(%Message{role: :user} = message), do: {:ok, message}
+  defp normalize_prompt(%Message{}), do: {:error, :invalid_message}
+  defp normalize_prompt(content), do: {:ok, Message.new(role: :user, content: content)}
+
+  defp start_turn(user_message, opts, server) do
     prompt_opts = Keyword.merge(server.state.opts, opts)
 
     %{
@@ -670,7 +683,7 @@ defmodule Omni.Agent.Server do
     response = build_turn_response(server, messages, usage)
     notify(server, :turn, {:continue, response})
 
-    user_message = Message.new(role: :user, content: prompt)
+    {:ok, user_message} = normalize_prompt(prompt)
     server = %{server | step_message: user_message, turn_messages: [user_message]}
     notify(server, :message, user_message)
     evaluate_head(server)

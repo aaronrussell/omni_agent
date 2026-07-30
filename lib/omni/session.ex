@@ -316,7 +316,11 @@ defmodule Omni.Session do
   def stop(session), do: GenServer.stop(session, :normal)
 
   @doc "Sends a prompt to the wrapped Agent. See `Omni.Agent.prompt/3`."
-  @spec prompt(GenServer.server(), term(), keyword()) :: :ok
+  @spec prompt(
+          GenServer.server(),
+          String.t() | [Omni.Message.content()] | Omni.Message.t(),
+          keyword()
+        ) :: :ok | {:error, :invalid_message}
   def prompt(session, content, opts \\ []) do
     GenServer.call(session, {:prompt, content, opts})
   end
@@ -456,6 +460,9 @@ defmodule Omni.Session do
   - When `node_id` is `nil`, creates a new disjoint root with the
     given content — the atomic equivalent of `navigate(session,
     nil)` followed by `prompt(session, content)`.
+
+  `content` accepts the same forms as `prompt/3`, including a user
+  `%Omni.Message{}`.
 
   Idle-only: returns `{:error, status}` with the current status (`:busy`
   or `:paused`) when a turn is in flight.
@@ -794,7 +801,7 @@ defmodule Omni.Session do
          parent_messages_fn = &Enum.drop(Tree.messages(&1), -1),
          {:ok, session} <- apply_navigation(session, node_id, parent_messages_fn) do
       session = %{session | regen_source: node_id, pre_branch_tree: pre_tree}
-      :ok = Agent.prompt(session.agent, node.message.content)
+      :ok = Agent.prompt(session.agent, node.message)
       {:reply, :ok, session}
     else
       {:error, _} = error -> {:reply, error, session}
@@ -805,6 +812,7 @@ defmodule Omni.Session do
     pre_tree = session.tree
 
     with :ok <- require_idle(session),
+         :ok <- validate_content(content),
          {:ok, session} <- apply_navigation(session, nil, fn _ -> [] end) do
       session = %{session | pre_branch_tree: pre_tree}
       :ok = Agent.prompt(session.agent, content)
@@ -818,6 +826,7 @@ defmodule Omni.Session do
     pre_tree = session.tree
 
     with :ok <- require_idle(session),
+         :ok <- validate_content(content),
          {:ok, node} <- fetch_node(session.tree, node_id),
          :ok <- require_role(node, :assistant, :not_assistant_node),
          {:ok, session} <- apply_navigation(session, node_id, &Tree.messages/1) do
@@ -1022,6 +1031,13 @@ defmodule Omni.Session do
 
   defp require_role(%{message: %{role: role}}, role, _err), do: :ok
   defp require_role(_node, _role, err), do: {:error, err}
+
+  # Rejects non-user messages before navigation mutates the session —
+  # Agent.prompt would refuse them only after the path had already moved.
+  defp validate_content(%Omni.Message{role: role}) when role != :user,
+    do: {:error, :invalid_message}
+
+  defp validate_content(_content), do: :ok
 
   # Shared backbone for navigate/branch handle_call clauses. Walks the
   # tree to `target`, resyncs the Agent's committed messages, broadcasts

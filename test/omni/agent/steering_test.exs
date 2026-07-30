@@ -131,6 +131,60 @@ defmodule Omni.Agent.SteeringTest do
       assert length(messages) == 4
     end
 
+    test "staged message struct enters the next turn with private intact" do
+      stub_name = unique_stub_name()
+      {:ok, counter} = Elixir.Agent.start_link(fn -> 0 end)
+      parent = self()
+      gate_ref = make_ref()
+
+      Req.Test.stub(stub_name, fn conn ->
+        call_num = Elixir.Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+        # First call blocks until the test stages the follow-up message.
+        if call_num == 0 do
+          send(parent, {:llm_called, gate_ref, self()})
+
+          receive do
+            {:release, ^gate_ref} -> :ok
+          end
+        end
+
+        body = File.read!(@text_fixture)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("text/event-stream")
+        |> Plug.Conn.send_resp(200, body)
+      end)
+
+      {:ok, agent} =
+        Agent.start_link(
+          model: model(),
+          subscribe: true,
+          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
+        )
+
+      :ok = Agent.prompt(agent, "Hello!")
+      assert_receive {:llm_called, ^gate_ref, plug_pid}, 2000
+
+      staged =
+        Omni.Message.new(
+          role: :user,
+          content: "Follow up!",
+          private: %{title_seed: "Follow-up seed"}
+        )
+
+      :ok = Agent.prompt(agent, staged)
+      send(plug_pid, {:release, gate_ref})
+
+      events = collect_events(agent)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
+
+      messages = Agent.get_state(agent, :messages)
+      staged_user = Enum.find(messages, &(&1.private == %{title_seed: "Follow-up seed"}))
+      assert staged_user
+      assert staged_user.role == :user
+      assert staged_user.timestamp == staged.timestamp
+    end
+
     test "prompt while paused stages content for next turn" do
       stub_name = unique_stub_name()
       stub_sequence(stub_name, [@tool_use_fixture, @text_fixture, @text_fixture])

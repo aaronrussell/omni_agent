@@ -101,6 +101,62 @@ defmodule Omni.Agent.PromptTest do
     end
   end
 
+  describe "prompt with message struct" do
+    test "accepts a user message and preserves content, private, and timestamp" do
+      {:ok, agent} = start_agent()
+
+      message =
+        Omni.Message.new(
+          role: :user,
+          content: "Hello!",
+          private: %{title_seed: "Greeting"}
+        )
+
+      :ok = Agent.prompt(agent, message)
+      events = collect_events(agent)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
+
+      [user_msg, assistant_msg] = Agent.get_state(agent, :messages)
+      assert user_msg.role == :user
+      assert [%Text{text: "Hello!"}] = user_msg.content
+      assert user_msg.private == %{title_seed: "Greeting"}
+      assert user_msg.timestamp == message.timestamp
+      assert assistant_msg.role == :assistant
+    end
+
+    test "rejects a non-user message with {:error, :invalid_message}" do
+      {:ok, agent} = start_agent()
+
+      message = Omni.Message.new(role: :assistant, content: "I am not a prompt")
+      assert {:error, :invalid_message} = Agent.prompt(agent, message)
+
+      assert Agent.get_state(agent, :status) == :idle
+      assert Agent.get_state(agent, :messages) == []
+    end
+
+    test "rejects a non-user message while busy without clobbering state" do
+      stub_name = unique_stub_name()
+      stub_slow(stub_name, @text_fixture, 200)
+
+      {:ok, agent} =
+        Agent.start_link(
+          model: model(),
+          subscribe: true,
+          opts: [api_key: "test-key", plug: {Req.Test, stub_name}]
+        )
+
+      :ok = Agent.prompt(agent, "Hello!")
+      Process.sleep(50)
+
+      message = Omni.Message.new(role: :assistant, content: "Nope")
+      assert {:error, :invalid_message} = Agent.prompt(agent, message)
+
+      events = collect_events(agent)
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
+      assert length(Agent.get_state(agent, :messages)) == 2
+    end
+  end
+
   describe "turn response content" do
     test "contains expected user and assistant messages" do
       {:ok, agent} = start_agent()

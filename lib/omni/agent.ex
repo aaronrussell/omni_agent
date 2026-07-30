@@ -369,7 +369,7 @@ defmodule Omni.Agent do
 
   alias Omni.Agent.{Snapshot, State}
   alias Omni.Content.{ToolResult, ToolUse}
-  alias Omni.Response
+  alias Omni.{Message, Response}
 
   @doc """
   Called when the agent starts.
@@ -407,7 +407,8 @@ defmodule Omni.Agent do
   `{:continue, content, state}` to commit the current turn and start a
   new turn with `content` as the next user message (subscribers
   receive `{:agent, pid, :turn, {:continue, response}}`). The `content`
-  argument accepts a string or a list of content blocks.
+  argument accepts a string, a list of content blocks, or a user
+  `%Omni.Message{}` (same as `prompt/3`).
 
   If a staged prompt exists (from `prompt/3` while busy), it overrides this
   callback's decision. See the "Prompt queuing" section in the moduledoc.
@@ -546,8 +547,13 @@ defmodule Omni.Agent do
   @doc """
   Sends a prompt to the agent.
 
-  `content` accepts a string (wrapped in a `Text` block) or a list of content
-  blocks (for attachments or `ToolResult` blocks for manual tool execution).
+  `content` accepts a string (wrapped in a `Text` block), a list of content
+  blocks (for attachments or `ToolResult` blocks for manual tool execution),
+  or a ready-made user `%Omni.Message{}` — useful for attaching `:private`
+  metadata to the message. Message structs pass through intact, `:private`
+  and `:timestamp` included. A message whose role is not `:user` is
+  rejected with `{:error, :invalid_message}`.
+
   Options are merged on top of the agent's default `:opts` for this turn only.
 
   Behaviour depends on agent status:
@@ -555,8 +561,11 @@ defmodule Omni.Agent do
   - **Idle** — starts a new turn immediately.
   - **Running or paused** — stages the content for the next turn boundary,
     overriding `handle_turn`'s decision. See "Prompt queuing" in the moduledoc.
+    The content is normalized to a `%Omni.Message{}` at call time, so its
+    timestamp reflects submission, not when the turn boundary arrives.
   """
-  @spec prompt(GenServer.server(), term(), keyword()) :: :ok
+  @spec prompt(GenServer.server(), String.t() | [Message.content()] | Message.t(), keyword()) ::
+          :ok | {:error, :invalid_message}
   def prompt(agent, content, opts \\ []) do
     GenServer.call(agent, {:prompt, content, opts})
   end

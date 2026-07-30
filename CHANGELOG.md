@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- **`prompt/3` accepts a user `%Omni.Message{}`** — on both `Omni.Agent` and `Omni.Session`, alongside the existing string and content-block forms. Message structs pass through intact (`:private` and `:timestamp` preserved), so callers can attach message metadata such as a `:title_seed`. A non-user message is rejected with `{:error, :invalid_message}`. `handle_turn/2`'s `{:continue, content, state}` accepts the same forms.
+
+### Changed
+
+- **Prompt content is normalized to a `%Omni.Message{}` at call time** — a prompt staged while the agent is busy or paused now carries the timestamp of when it was submitted, not when the turn boundary picked it up.
+- **`Session.branch/2` (regen) re-prompts with the original message struct** — the regenerated turn preserves the source user message's `:private` and `:timestamp` instead of re-wrapping its content.
+
 ## [0.5.0] - 2026-05-22
 
 ### Added

@@ -17,6 +17,7 @@ defmodule Omni.Agent.AgentCase do
         ModifyResult,
         TrackToolUses,
         ContinueAgent,
+        ContinueMessageAgent,
         ErrorRetryAgent,
         TerminateAgent,
         CrashRetryAgent,

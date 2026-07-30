@@ -35,6 +35,26 @@ defmodule Omni.Agent.ContinuationTest do
       # = 2 + 2 + 2 = 6 messages
       assert length(messages) == 6
     end
+
+    test "{:continue, message, state} accepts a user message with private intact" do
+      {:ok, agent} =
+        start_agent_with_module(ContinueMessageAgent,
+          fixtures: [@text_fixture, @text_fixture]
+        )
+
+      :ok = Agent.prompt(agent, "Start")
+      events = collect_events(agent)
+
+      continue_events = for {:turn, {:continue, _data}} <- events, do: :ok
+      assert length(continue_events) == 1
+      assert {:turn, {:stop, %Response{}}} = List.last(events)
+
+      messages = Agent.get_state(agent, :messages)
+      continuation_user = Enum.at(messages, 2)
+      assert continuation_user.role == :user
+      assert [%Text{text: "Continue."}] = continuation_user.content
+      assert continuation_user.private == %{title_seed: "continuation seed"}
+    end
   end
 
   describe "max_steps" do

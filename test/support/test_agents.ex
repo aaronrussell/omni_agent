@@ -80,6 +80,34 @@ defmodule Omni.Agent.TestAgents do
     end
   end
 
+  defmodule ContinueMessageAgent do
+    use Omni.Agent
+
+    @impl Omni.Agent
+    def init(state) do
+      {:ok, %{state | private: Map.put(state.private, :turn_count, 0)}}
+    end
+
+    @impl Omni.Agent
+    def handle_turn(_response, state) do
+      count = state.private.turn_count + 1
+      state = %{state | private: %{state.private | turn_count: count}}
+
+      if count < 2 do
+        message =
+          Omni.Message.new(
+            role: :user,
+            content: "Continue.",
+            private: %{title_seed: "continuation seed"}
+          )
+
+        {:continue, message, state}
+      else
+        {:stop, state}
+      end
+    end
+  end
+
   defmodule ErrorRetryAgent do
     use Omni.Agent
 

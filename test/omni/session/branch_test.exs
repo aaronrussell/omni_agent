@@ -5,6 +5,32 @@ defmodule Omni.Session.BranchTest do
 
   @moduletag :tmp_dir
 
+  describe "prompt/3 with a message struct" do
+    test "user message enters the tree with private and timestamp intact", ctx do
+      {session, _} = start_session(ctx)
+
+      message =
+        Message.new(role: :user, content: "ask", private: %{title_seed: "clean seed"})
+
+      :ok = Session.prompt(session, message)
+      _ = collect_session_events(session)
+
+      tree = Session.get_tree(session)
+      root = Tree.get_node(tree, 1).message
+      assert root.private == %{title_seed: "clean seed"}
+      assert root.timestamp == message.timestamp
+      assert [%Text{text: "ask"}] = root.content
+    end
+
+    test "non-user message returns {:error, :invalid_message}", ctx do
+      {session, _} = start_session(ctx)
+
+      message = Message.new(role: :assistant, content: "nope")
+      assert {:error, :invalid_message} = Session.prompt(session, message)
+      assert Session.get_tree(session).nodes == %{}
+    end
+  end
+
   describe "branch/3 (edit — target an assistant with new content)" do
     test "creates a new user+turn branching off the target assistant", ctx do
       {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
@@ -49,6 +75,19 @@ defmodule Omni.Session.BranchTest do
       _ = collect_session_events(session)
 
       assert {:error, :not_found} = Session.branch(session, 999, "B")
+    end
+
+    test "non-user message content: returns :invalid_message, session untouched", ctx do
+      {session, _} = start_session(ctx)
+      :ok = Session.prompt(session, "A")
+      _ = collect_session_events(session)
+
+      pre_tree = Session.get_tree(session)
+      message = Message.new(role: :assistant, content: "nope")
+
+      assert {:error, :invalid_message} = Session.branch(session, 2, message)
+      assert {:error, :invalid_message} = Session.branch(session, nil, message)
+      assert Session.get_tree(session) == pre_tree
     end
 
     test "nil target: creates a disjoint new root with the given content", ctx do
@@ -105,6 +144,25 @@ defmodule Omni.Session.BranchTest do
       assert Tree.head(tree) == new_a_id
       # Original assistant message is still present, unmutated.
       assert Tree.get_node(tree, original_assistant_id) != nil
+    end
+
+    test "reuses the original message — private and timestamp preserved", ctx do
+      {session, _} = start_session(ctx, fixtures: [@text_fixture, @text_fixture])
+
+      original =
+        Message.new(role: :user, content: "ask", private: %{title_seed: "clean seed"})
+
+      :ok = Session.prompt(session, original)
+      _ = collect_session_events(session)
+
+      :ok = Session.branch(session, 1)
+      _ = collect_session_events(session)
+
+      # The regenerated turn re-prompts with the tree node's message, so
+      # the agent's context carries the original private and timestamp.
+      [user_msg, _assistant] = Session.get_agent(session, :messages)
+      assert user_msg.private == %{title_seed: "clean seed"}
+      assert user_msg.timestamp == original.timestamp
     end
 
     test "clears regen_source after the first turn commit", ctx do
