@@ -264,6 +264,13 @@ Omni.Agent.unsubscribe(agent)
 Omni.Agent.unsubscribe(agent, pid)
 ```
 
+`prompt/3` content accepts a string, a list of content blocks, or a
+ready-made user `%Message{}`. Content is normalized to a `%Message{}`
+at the call boundary; a passed struct flows through intact, `:private`
+and `:timestamp` included. A non-user message is rejected with
+`{:error, :invalid_message}`. `handle_turn`'s `{:continue, content,
+state}` accepts the same forms.
+
 Start options of note:
 
 - `:model` (required), `:system`, `:messages`, `:tools`, `:opts`,
@@ -377,8 +384,9 @@ Subscribers see `:status :paused` before `:pause`.
 ### 4.9 Steering (prompt queuing)
 
 A `prompt/3` call while `:busy` or `:paused` does not error — it
-stages the content as the next turn's prompt. At the upcoming `:turn`
-event:
+stages the content as the next turn's prompt (normalized to a user
+`%Message{}` at call time, so its timestamp reflects submission, not
+the turn boundary). At the upcoming `:turn` event:
 
 - `handle_turn` fires as normal (for bookkeeping).
 - The staged prompt overrides `handle_turn`'s decision — whatever the
@@ -623,7 +631,7 @@ legal arity:
 
 | Call | Target role | Semantics |
 |---|---|---|
-| `branch(session, user_id)` | user | Regenerate this user's turn. Same content, new response. |
+| `branch(session, user_id)` | user | Regenerate this user's turn. Same message, new response. |
 | `branch(session, assistant_id, content)` | assistant | Extend from this assistant with a new user `content` — "edit the next user message." |
 | `branch(session, nil, content)` | — | New disjoint root. Atomic `navigate(nil) + prompt(content)`. |
 
@@ -638,7 +646,8 @@ current status atom (`:busy`, `:paused`) if not idle.
 3. Agent sees messages up to but **not** including the user (its
    parent path).
 4. Session records `regen_source = user_id`.
-5. `Agent.prompt(agent, content_of(user_id))`.
+5. `Agent.prompt(agent, message_of(user_id))` — the node's message
+   struct is reused verbatim, preserving `:private` and `:timestamp`.
 6. During the in-flight window, tree path and Agent messages are
    deliberately out of sync (tree ends on user, Agent ends on user's
    parent).
@@ -973,12 +982,16 @@ losing their view of `:store` / `:idle_shutdown_after`.
   `300_000`. Passes through to each session; caller can override
   per-call. Pass `nil` to disable manager-wide.
 - `:title_generator` — controls automatic title generation for
-  untitled sessions. `:heuristic` (default) truncates the first user
-  message; a model ref (e.g. `{:anthropic, "claude-haiku-4-5"}`) uses
-  the given model; `{model_ref, opts}` passes opts through to
-  `Omni.generate_text/3`; `false` disables. When enabled, the Manager
-  starts an internal TitleService GenServer that observes sessions and
-  generates titles on first turn completion.
+  untitled sessions. `:heuristic` (default) truncates the first
+  content-bearing message to 64 chars — a `private[:title_seed]`
+  string wins over the message's content, and leading well-formed XML
+  is stripped from content before extraction (messages left with no
+  text are skipped); a model ref (e.g. `{:anthropic,
+  "claude-haiku-4-5"}`) uses the given model; `{model_ref, opts}`
+  passes opts through to `Omni.generate_text/3`; `false` disables.
+  When enabled, the Manager starts an internal TitleService GenServer
+  that observes sessions and generates titles on first turn
+  completion.
 - `:name` — overrides the registered name; defaults to the `use`-ing
   module.
 

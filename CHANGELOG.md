@@ -8,13 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
-- **`prompt/3` accepts a user `%Omni.Message{}`** — on both `Omni.Agent` and `Omni.Session`, alongside the existing string and content-block forms. Message structs pass through intact (`:private` and `:timestamp` preserved), so callers can attach message metadata such as a `:title_seed`. A non-user message is rejected with `{:error, :invalid_message}`. `handle_turn/2`'s `{:continue, content, state}` accepts the same forms.
-- **`Omni.Session.Title` heuristic understands `:title_seed`** — a `private[:title_seed]` string on a message wins over its content, so agents that wrap prompts in XML-like context markup can supply clean title text. Set it by prompting with a `%Omni.Message{}`.
+- **`prompt/3` accepts a user `%Omni.Message{}`** — on both `Omni.Agent` and `Omni.Session`, alongside the existing string and content-block forms. A non-user message is rejected. `handle_turn/2`'s `{:continue, content, state}` accepts the same forms.
+- **`Omni.Session.Title` heuristic understands `:title_seed`** — a `private[:title_seed]` string set on a `%Omni.Message{}` will be used for title generation over it's content.
 
 ### Changed
 
-- **`Omni.Session.Title` heuristic strips leading well-formed XML** — a prompt opening with context blocks (e.g. `<context_history>...</context_history>`) titles from the text that follows instead of truncated markup; messages left with no text are skipped. Malformed or inline markup is left untouched. The heuristic length also increased from 50 to 64 characters.
-- **Prompt content is normalized to a `%Omni.Message{}` at call time** — a prompt staged while the agent is busy or paused now carries the timestamp of when it was submitted, not when the turn boundary picked it up.
+- **`Omni.Session.Title` heuristic strips leading well-formed XML** — well-formed XML blocks (e.g. `<context_history>...</context_history>`) are stripped from message content before title generation. The heuristic length also increased from 50 to 64 characters.
+- **Prompt content is normalized to a `%Omni.Message{}` at call time** — a prompt staged while the agent is busy or paused now carries the timestamp of when it was submitted, not when the turn picks it up.
 - **`Session.branch/2` (regen) re-prompts with the original message struct** — the regenerated turn preserves the source user message's `:private` and `:timestamp` instead of re-wrapping its content.
 
 ## [0.5.0] - 2026-05-22
