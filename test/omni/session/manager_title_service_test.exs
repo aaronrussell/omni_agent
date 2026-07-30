@@ -67,6 +67,23 @@ defmodule Omni.Session.ManagerTitleServiceTest do
       assert String.length(title) > 0
     end
 
+    test "uses the prompt message's title_seed when present", ctx do
+      {manager, _store} = start_manager(ctx)
+      {pid, id, _stub} = create_session(manager)
+
+      message =
+        Message.new(
+          role: :user,
+          content: "<context_history>noise</context_history>\n@bot do the thing",
+          private: %{title_seed: "Do the thing"}
+        )
+
+      Session.prompt(pid, message)
+      _ = collect_session_events(pid)
+
+      assert_receive {:manager, _, :title, %{id: ^id, title: "Do the thing"}}, 2000
+    end
+
     test "skips sessions created with explicit title", ctx do
       {manager, _store} = start_manager(ctx)
       {pid, id, _stub} = create_session(manager, title: "Explicit")
