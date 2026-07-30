@@ -31,7 +31,7 @@ defmodule Omni.Session.Title do
   # with matching close, with (?&elem) recursing for nested elements.
   # Attribute values may not contain < or >; anything malformed simply
   # doesn't match, leaving the text untouched.
-  @leading_xml ~r{\A\s*(?<elem><[a-zA-Z_][\w.:-]*(?:\s[^<>]*)?/>|<([a-zA-Z_][\w.:-]*)(?:\s[^<>]*)?>(?:[^<]|(?&elem))*</\2\s*>)}
+  @leading_xml ~r{\A\s*(?<elem><[a-zA-Z_][\w.:-]*(?:\s[^<>]*)?/>|<([a-zA-Z_][\w.:-]*)(?:\s[^<>]*)?>(?:[^<]++|(?&elem))*+</\2\s*>)}
 
   @system_prompt """
   You generate concise 3-6 word titles for conversations.
