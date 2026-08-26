@@ -84,6 +84,30 @@ defmodule Omni.Session.ManagerTitleServiceTest do
       assert_receive {:manager, _, :title, %{id: ^id, title: "Do the thing"}}, 2000
     end
 
+    test "titles a session whose first turn completed before the service subscribed", ctx do
+      {manager, _store} = start_manager(ctx)
+      ts = title_service_pid(manager)
+
+      # Suspend the service so it cannot process the :opened event —
+      # the session's first turn then deterministically completes
+      # before the service ever subscribes, reproducing the race a
+      # fast (stubbed) first turn wins in the wild. :sys calls are
+      # system messages, so create_session's mailbox flush still works.
+      :ok = :sys.suspend(ts)
+      {pid, id, _stub} = create_session(manager)
+
+      Session.prompt(pid, "Tell me about Elixir programming")
+      _ = collect_session_events(pid)
+
+      :ok = :sys.resume(ts)
+
+      # On processing :opened, the service must title from the
+      # subscribe snapshot — no further :turn event is coming.
+      assert_receive {:manager, _, :title, %{id: ^id, title: title}}, 2000
+      assert is_binary(title)
+      assert String.length(title) > 0
+    end
+
     test "skips sessions created with explicit title", ctx do
       {manager, _store} = start_manager(ctx)
       {pid, id, _stub} = create_session(manager, title: "Explicit")

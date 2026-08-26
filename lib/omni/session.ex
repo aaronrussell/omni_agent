@@ -140,6 +140,10 @@ defmodule Omni.Session do
   | `title` | Persisted only. `title:` start option is ignored. |
   | `messages` | Derived from the persisted tree. `agent: [messages: _]` is silently ignored. |
 
+  A start opt that overrides a persisted value becomes durable at the
+  next turn commit — the reconciled state is written back to the store.
+  A load that never commits another turn leaves the store untouched.
+
   On `:new`, `agent: [messages: _]` is **rejected** with
   `{:error, :initial_messages_not_supported}` — the tree is the sole
   entry point for messages.
@@ -180,7 +184,9 @@ defmodule Omni.Session do
   Session commits the turn's messages into the tree after forwarding
   the Agent's `:turn` event, then persists. Subscribers that want the
   logical turn boundary listen on `:turn`; subscribers that want the
-  tree-structure change listen on `:tree`.
+  tree-structure change listen on `:tree`. When the persistable state
+  map has changed since the last write (always true at a session's
+  first commit), a `:store {:saved, :state}` follows the tree save.
 
   When a `branch/2,3` turn is cancelled or errors, Session rolls the
   tree back to its pre-branch state and resyncs the Agent. The order is:
@@ -194,11 +200,13 @@ defmodule Omni.Session do
 
   - **Turn commits** → `save_tree` with `:new_node_ids`, plus a
     `:tree` event and a `:store {:saved, :tree}` / `{:error, :tree, _}`
-    event.
+    event. The persistable subset (`model`, `system`, `opts`, `title`)
+    is then written too when it differs from what's on disk — always
+    true at the first commit, so a committed session is always fully
+    loadable.
   - **Agent `:state` events** → `save_state` *only* when the
-    persistable subset (`model`, `system`, `opts`, `title`) has
-    changed since last write. Changes to `:tools` or `:private` do
-    not trigger a write.
+    persistable subset has changed since last write. Changes to
+    `:tools` or `:private` do not trigger a write.
 
   All store calls are synchronous; Session **never halts** on store
   errors, only emits `:store {:error, _, _}`. Adapter-specific reasons
@@ -584,8 +592,9 @@ defmodule Omni.Session do
         {:error, :already_exists}
 
       true ->
-        persistable = persistable_from_agent_opts(agent_opts, opts[:title])
-        {:ok, %Tree{}, opts[:title], persistable, agent_opts}
+        # Nothing is on disk yet — seed change-detection with nil so the
+        # first turn commit (or pre-commit :state event) always writes.
+        {:ok, %Tree{}, opts[:title], nil, agent_opts}
     end
   end
 
@@ -624,14 +633,7 @@ defmodule Omni.Session do
         |> Keyword.put(:tools, tools)
         |> Keyword.put(:messages, Tree.messages(tree))
 
-      persistable = %{
-        model: model_ref,
-        system: system,
-        opts: Enum.sort(inference_opts),
-        title: title
-      }
-
-      {:ok, tree, title, persistable, agent_opts}
+      {:ok, tree, title, stored_subset(state_map), agent_opts}
     end
   end
 
@@ -658,20 +660,18 @@ defmodule Omni.Session do
   defp agent_start_opts({_mod, opts}) when is_list(opts), do: opts
   defp agent_start_opts(opts) when is_list(opts), do: opts
 
-  defp persistable_from_agent_opts(agent_opts, title) do
+  # Seed change-detection with what is actually on disk — not the
+  # reconciled values. A reconciled field that differs from the store
+  # (start-opt override, absent state file) must register as a change
+  # so the next turn commit persists it.
+  defp stored_subset(state_map) do
     %{
-      model: normalise_model_ref(Keyword.get(agent_opts, :model)),
-      system: Keyword.get(agent_opts, :system),
-      opts: Enum.sort(Keyword.get(agent_opts, :opts, [])),
-      title: title
+      model: Map.get(state_map, :model),
+      system: Map.get(state_map, :system),
+      opts: Enum.sort(Map.get(state_map, :opts, [])),
+      title: Map.get(state_map, :title)
     }
   end
-
-  defp normalise_model_ref({provider, id}) when is_atom(provider) and is_binary(id),
-    do: {provider, id}
-
-  defp normalise_model_ref(%Omni.Model{} = model), do: Omni.Model.to_ref(model)
-  defp normalise_model_ref(other), do: other
 
   # -- Agent startup --
 
@@ -864,6 +864,13 @@ defmodule Omni.Session do
     session = %{session | tree: new_tree, pre_branch_tree: nil}
     broadcast(session, :tree, %{tree: new_tree, new_nodes: new_node_ids})
     session = persist_tree(session, new_node_ids)
+
+    # Guarantee a committed session is fully persisted: write the state
+    # map alongside the tree whenever it differs from what's on disk —
+    # a no-op on steady-state commits. get_state (rather than a cache
+    # fed by :state events) also captures callback-returned mutations,
+    # which emit no :state event.
+    session = persist_state_if_changed(Agent.get_state(session.agent), session)
 
     {:noreply, session}
   end

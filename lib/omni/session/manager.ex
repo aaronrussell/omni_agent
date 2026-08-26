@@ -380,8 +380,10 @@ defmodule Omni.Session.Manager do
   The trailing atom tells you what happened:
 
     * `{:ok, pid, :started}` — session wasn't running; Manager loaded it
-      from the store, and start-time opts (`:agent`, `:title`,
-      `:idle_shutdown_after`, `:subscribers`) were applied.
+      from the store, and start-time opts (`:agent`,
+      `:idle_shutdown_after`, `:subscribers`) were applied. A `:title`
+      opt is ignored on load — the persisted title wins (see
+      `Omni.Session` § Load-mode resolution).
     * `{:ok, pid, :existing}` — session was already running. Start-time
       opts are silently dropped (`:subscribe` still applies).
 

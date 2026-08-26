@@ -53,6 +53,11 @@ defmodule Omni.Session.StateTest do
     test "changing :tools does NOT trigger save_state (tools not persisted)", ctx do
       {session, _} = start_session(ctx, new: "s1")
 
+      # Establish the on-disk baseline first — a fresh session's first
+      # :state event writes the whole (previously unwritten) state map.
+      :ok = Session.set_title(session, "baseline")
+      assert_receive {:session, ^session, :store, {:saved, :state}}, 1000
+
       tool =
         Omni.tool(
           name: "noop",
@@ -71,6 +76,10 @@ defmodule Omni.Session.StateTest do
       {session, _} =
         start_session(ctx, new: "s1", agent_opts: [opts: original_opts])
 
+      # The first set persists — a fresh session has no state on disk.
+      :ok = Session.set_agent(session, :opts, original_opts)
+      assert_receive {:session, ^session, :store, {:saved, :state}}, 1000
+
       # Changing to a reordering of the same keyword list must not be
       # seen as a change — Session canonicalises via Enum.sort/1.
       reordered = [max_tokens: 100, temperature: 0.5]
@@ -82,6 +91,10 @@ defmodule Omni.Session.StateTest do
     test "identical re-set does not trigger save_state", ctx do
       {session, _} = start_session(ctx, new: "s1")
       current = Session.get_agent(session, :system)
+
+      # The first set persists — a fresh session has no state on disk.
+      :ok = Session.set_agent(session, :system, current)
+      assert_receive {:session, ^session, :store, {:saved, :state}}, 1000
 
       :ok = Session.set_agent(session, :system, current)
       refute_receive {:session, ^session, :store, {:saved, :state}}, 200

@@ -18,6 +18,7 @@ defmodule Omni.Session.Manager.TitleService do
   alias Omni.Session
   alias Omni.Session.Manager
   alias Omni.Session.Title
+  alias Omni.Session.Tree
 
   defstruct manager: nil,
             title_generator: :heuristic,
@@ -49,7 +50,7 @@ defmodule Omni.Session.Manager.TitleService do
       {:ok, entries} ->
         state =
           Enum.reduce(entries, state, fn entry, acc ->
-            if is_nil(entry.title), do: track(acc, entry.id, entry.pid), else: acc
+            if is_nil(entry.title), do: track(acc, entry.id, entry.pid, :discovered), else: acc
           end)
 
         {:ok, state}
@@ -60,7 +61,9 @@ defmodule Omni.Session.Manager.TitleService do
 
   @impl true
   def handle_info({:manager, _mod, :opened, %{id: id, title: nil, pid: pid}}, state) do
-    state = if Map.has_key?(state.pending, id), do: state, else: track(state, id, pid)
+    state =
+      if Map.has_key?(state.pending, id), do: state, else: track(state, id, pid, :discovered)
+
     {:noreply, state}
   end
 
@@ -73,7 +76,7 @@ defmodule Omni.Session.Manager.TitleService do
       else
         case Manager.whereis(state.manager, id) do
           nil -> state
-          pid -> track(state, id, pid)
+          pid -> track(state, id, pid, :cleared)
         end
       end
 
@@ -170,17 +173,32 @@ defmodule Omni.Session.Manager.TitleService do
 
   # ── Internals: tracking ────────────────────────────────────────
 
-  defp track(state, id, pid) do
+  # `mode: :discovered` — the service is meeting this session for the
+  # first time (init sweep, :opened event). A turn may have committed
+  # before the subscription landed — the service learns of sessions
+  # asynchronously, so a fast first turn can beat it and its :turn
+  # event would never arrive. The subscribe snapshot is authoritative
+  # at subscription time: title now if there is already something to
+  # title. `mode: :cleared` (title set to nil on a tracked-then-
+  # untracked session) deliberately waits for the next turn instead —
+  # an explicit clear must not be immediately overwritten.
+  defp track(state, id, pid, mode) do
     case safe_subscribe(pid) do
-      :ok ->
+      {:ok, snapshot} ->
         ref = Process.monitor(pid)
         entry = %{pid: pid, monitor: ref, task: nil}
 
-        %{
+        state = %{
           state
           | pending: Map.put(state.pending, id, entry),
             session_refs: Map.put(state.session_refs, ref, id)
         }
+
+        if mode == :discovered and Tree.size(snapshot.tree) > 0 do
+          start_generation(state, id, pid)
+        else
+          state
+        end
 
       :error ->
         state
@@ -273,9 +291,7 @@ defmodule Omni.Session.Manager.TitleService do
   end
 
   defp safe_subscribe(pid) do
-    case Session.subscribe(pid, self(), mode: :observer) do
-      {:ok, _snapshot} -> :ok
-    end
+    Session.subscribe(pid, self(), mode: :observer)
   catch
     :exit, _ -> :error
   end

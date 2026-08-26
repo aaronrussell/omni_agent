@@ -40,6 +40,12 @@ defmodule Omni.Session.MutationTest do
     test "same-value set: no spurious save_state", ctx do
       {session, _} = start_session(ctx, new: "s1", title: "Original")
 
+      # The first set persists — a fresh session has no state on disk.
+      :ok = Session.set_title(session, "Original")
+      assert_receive {:session, ^session, :title, "Original"}, 500
+      assert_receive {:session, ^session, :store, {:saved, :state}}, 1000
+
+      # Same-value re-set against the on-disk baseline: no write.
       :ok = Session.set_title(session, "Original")
       assert_receive {:session, ^session, :title, "Original"}, 500
       refute_receive {:session, ^session, :store, {:saved, :state}}, 200
@@ -59,6 +65,11 @@ defmodule Omni.Session.MutationTest do
     test "add_tool appends to agent's tools and emits :state (no :store)", ctx do
       {session, _} = start_session(ctx, new: "s1")
       assert Session.get_agent(session, :tools) == []
+
+      # Establish the on-disk baseline first — a fresh session's first
+      # :state event writes the whole (previously unwritten) state map.
+      :ok = Session.set_title(session, "baseline")
+      assert_receive {:session, ^session, :store, {:saved, :state}}, 1000
 
       :ok = Session.add_tool(session, noop_tool())
 

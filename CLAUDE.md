@@ -138,9 +138,13 @@ Two categories with different trigger rules:
   navigation, or branch initiation calls it.
 - **State map** (`save_state` — `model`, `system`, `opts`, `title`)
   is change-detected. Session diffs the persistable subset against
-  `last_persisted_state` on every Agent `:state` event and every
-  `set_title/2` call; unchanged → no write. `opts` is canonicalised
-  (sorted keyword) to avoid spurious saves on reordered-but-equivalent
+  `last_persisted_state` on every turn commit (via `Agent.get_state`,
+  after `save_tree`), every Agent `:state` event, and every
+  `set_title/2` call; unchanged → no write. `last_persisted_state` is
+  seeded with what is actually on disk (`nil` for `:new`, the raw
+  stored map for `:load`), so a committed session is always fully
+  loadable from the first commit. `opts` is canonicalised (sorted
+  keyword) to avoid spurious saves on reordered-but-equivalent
   inputs.
 
 Store calls are synchronous and always go through Session's mailbox

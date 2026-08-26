@@ -523,13 +523,20 @@ Agent config field reconciles against start opts:
 
 Rationale: `model` has the strongest "this conversation was with X"
 identity; other fields track the app's current config intent. `tree`
-and `title` are artefacts of the conversation itself.
+and `title` are artefacts of the conversation itself. A start opt
+that overrides a persisted value becomes durable at the next turn
+commit; a load that never commits leaves the store untouched.
 
-**Post-load seeding.** Before the Agent starts, Session seeds
-`last_persisted_state` from the reconciled persistable subset. This is
-what subsequent `:state`-event diffs compare against, so a `set_agent`
-that happens to leave the persistable subset unchanged (e.g. a tools
-update) correctly produces no write.
+**Seeding.** `last_persisted_state` is always seeded with what is
+actually on disk: `nil` for `:new` sessions (nothing written yet),
+the raw stored state map for `:load` (not the reconciled values).
+Change-detection then does the rest — reconciled state that differs
+from the store registers as a change and is written at the next turn
+commit or `:state` event, while a `set_agent` that leaves the
+persistable subset unchanged (e.g. a tools update) correctly produces
+no write. Seeding from reconciled values instead would make
+change-detection believe unwritten state was on disk — the class of
+bug where a committed session's tree loads with no state.
 
 ### 5.5 Persistence
 
@@ -538,7 +545,18 @@ Two categories with different triggers:
 | Category | Mutator | Callback | Trigger |
 |---|---|---|---|
 | Tree (nodes + path + cursors) | Session | `save_tree` | Turn commits, navigation, branch initiation |
-| State map (`model`, `system`, `opts`, `title`) | Agent + Session title | `save_state` | Agent `:state` events (change-detected), `set_title/2` |
+| State map (`model`, `system`, `opts`, `title`) | Agent + Session title | `save_state` | Turn commits (change-detected), Agent `:state` events (change-detected), `set_title/2` |
+
+**Commit-time state write.** At every turn commit, after `save_tree`,
+Session reads the agent's state (`Agent.get_state`) and runs the same
+change-detected `save_state`. Combined with the disk seeding above,
+this guarantees a session with a committed turn is fully loadable —
+`model`, `system` and `opts` are on disk from the first commit, with
+no reliance on the title path or on `:state` events. Reading via
+`get_state` (rather than caching `:state` events) also captures
+callback-returned mutations — a `handle_turn` that returns a state
+with a changed model emits no `:state` event, but its change is
+persisted at the commit it produced.
 
 **Change detection** for `save_state`: Session diffs the persistable
 subset (`model`, `system`, `opts` sorted, `title`) against
@@ -596,6 +614,8 @@ Session-specific events:
 prompt → forwarded streaming / :message / :step / :turn
        → :tree  %{tree, new_nodes}
        → :store {:saved, :tree}
+       → :store {:saved, :state}   (only when the subset changed —
+                                    always at the first commit)
 ```
 
 `:turn` is what Session observes to trigger the commit; `:tree` fires

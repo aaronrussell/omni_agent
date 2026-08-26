@@ -11,8 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **`prompt/3` accepts a user `%Omni.Message{}`** — on both `Omni.Agent` and `Omni.Session`, alongside the existing string and content-block forms. A non-user message is rejected. `handle_turn/2`'s `{:continue, content, state}` accepts the same forms.
 - **`Omni.Session.Title` heuristic understands `:title_seed`** — a `private[:title_seed]` string set on a `%Omni.Message{}` will be used for title generation over it's content.
 
+### Fixed
+
+- **Committed sessions are now fully persisted** — the state map (`model`, `system`, `opts`, `title`) is written alongside the tree at a session's first turn commit. Previously it was only written when something changed it later (typically auto-titling), so a session could persist its conversation but load with no model, system prompt, or inference opts — or refuse to start at all.
+- **Title generation no longer misses a fast first turn** — the Manager's `TitleService` now titles a session immediately on discovering it with an already-committed turn, instead of waiting for a turn event that will never arrive.
+
 ### Changed
 
+- **Load-time overrides now persist** — passing `system:` or `opts:` when loading a session writes the new values to the store at the next turn commit, so they survive a restart. Loading without committing a turn still leaves the store untouched.
 - **`Omni.Session.Title` heuristic strips leading well-formed XML** — well-formed XML blocks (e.g. `<context_history>...</context_history>`) are stripped from message content before title generation. The heuristic length also increased from 50 to 64 characters.
 - **Prompt content is normalized to a `%Omni.Message{}` at call time** — a prompt staged while the agent is busy or paused now carries the timestamp of when it was submitted, not when the turn picks it up.
 - **`Session.branch/2` (regen) re-prompts with the original message struct** — the regenerated turn preserves the source user message's `:private` and `:timestamp` instead of re-wrapping its content.

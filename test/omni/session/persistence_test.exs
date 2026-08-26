@@ -98,6 +98,41 @@ defmodule Omni.Session.PersistenceTest do
     end
   end
 
+  describe "state persistence at turn commit" do
+    test "first commit persists model, system and opts", ctx do
+      {session, stub_name} =
+        start_session(ctx, new: "s1", agent_opts: [system: "Keep me"])
+
+      :ok = Session.prompt(session, "Hello")
+      events = collect_session_events(session)
+
+      # The state save follows the tree save (same flush-window caveat
+      # as the tree event above).
+      unless {:store, {:saved, :state}} in events do
+        assert_receive {:session, ^session, :store, {:saved, :state}}, 2000
+      end
+
+      {:ok, _tree, state_map} = Store.load(tmp_store(ctx), "s1")
+      assert state_map[:model] == {:anthropic, "claude-haiku-4-5"}
+      assert state_map[:system] == "Keep me"
+      assert state_map[:opts][:api_key] == "test-key"
+      assert state_map[:opts][:plug] == {Req.Test, stub_name}
+    end
+
+    test "steady-state commits do not rewrite unchanged state", ctx do
+      {session, _} =
+        start_session(ctx, new: "s1", fixtures: [@text_fixture, @text_fixture])
+
+      :ok = Session.prompt(session, "First")
+      _ = collect_session_events(session)
+
+      :ok = Session.prompt(session, "Second")
+      events = collect_session_events(session)
+
+      refute {:store, {:saved, :state}} in events
+    end
+  end
+
   describe "load round-trip" do
     test "persisted session reopens with full conversation restored", ctx do
       {session, _} = start_session(ctx, new: "s1")
@@ -119,6 +154,69 @@ defmodule Omni.Session.PersistenceTest do
 
       assert Session.get_tree(reopened) == original_tree
       assert Session.get_agent(reopened, :messages) == Tree.messages(original_tree)
+    end
+
+    test "reopen passing only tools restores model, system and opts from the store", ctx do
+      {session, stub_name} =
+        start_session(ctx, new: "s1", agent_opts: [system: "Kept"])
+
+      :ok = Session.prompt(session, "Hello")
+      _ = collect_session_events(session)
+      :ok = Session.stop(session)
+
+      tool =
+        Omni.tool(
+          name: "noop",
+          description: "",
+          input_schema: %{type: "object", properties: %{}}
+        )
+
+      {:ok, reopened} =
+        Session.start_link(
+          load: "s1",
+          agent: [tools: [tool]],
+          store: tmp_store(ctx),
+          subscribe: true
+        )
+
+      assert Omni.Model.to_ref(Session.get_agent(reopened, :model)) ==
+               {:anthropic, "claude-haiku-4-5"}
+
+      assert Session.get_agent(reopened, :system) == "Kept"
+      assert [%{name: "noop"}] = Session.get_agent(reopened, :tools)
+
+      opts = Session.get_agent(reopened, :opts)
+      assert opts[:api_key] == "test-key"
+      assert opts[:plug] == {Req.Test, stub_name}
+    end
+
+    test "start-opt override becomes durable at the next turn commit", ctx do
+      {session, _} = start_session(ctx, new: "s1", agent_opts: [system: "Old"])
+
+      :ok = Session.prompt(session, "Hello")
+      _ = collect_session_events(session)
+      :ok = Session.stop(session)
+
+      stub_name = unique_stub_name()
+      stub_fixture(stub_name, @text_fixture)
+
+      {:ok, reopened} =
+        Session.start_link(
+          load: "s1",
+          agent: [system: "New", opts: [api_key: "test-key", plug: {Req.Test, stub_name}]],
+          store: tmp_store(ctx),
+          subscribe: true
+        )
+
+      # A load alone leaves the store untouched.
+      {:ok, _tree, state_map} = Store.load(tmp_store(ctx), "s1")
+      assert state_map[:system] == "Old"
+
+      :ok = Session.prompt(reopened, "Again")
+      _ = collect_session_events(reopened)
+
+      {:ok, _tree, state_map} = Store.load(tmp_store(ctx), "s1")
+      assert state_map[:system] == "New"
     end
   end
 
