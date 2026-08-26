@@ -124,7 +124,14 @@ defmodule Omni.Session.PersistenceTest do
         start_session(ctx, new: "s1", fixtures: [@text_fixture, @text_fixture])
 
       :ok = Session.prompt(session, "First")
-      _ = collect_session_events(session)
+      events = collect_session_events(session)
+
+      # Consume the first commit's state save before the second turn —
+      # on slow disks it can trail the flush window and would leak into
+      # the next collection, tripping the refute below.
+      unless {:store, {:saved, :state}} in events do
+        assert_receive {:session, ^session, :store, {:saved, :state}}, 2000
+      end
 
       :ok = Session.prompt(session, "Second")
       events = collect_session_events(session)
@@ -213,7 +220,13 @@ defmodule Omni.Session.PersistenceTest do
       assert state_map[:system] == "Old"
 
       :ok = Session.prompt(reopened, "Again")
-      _ = collect_session_events(reopened)
+      events = collect_session_events(reopened)
+
+      # Wait for the state save before reading the store — the :turn
+      # event precedes the writes, which can trail on slow disks.
+      unless {:store, {:saved, :state}} in events do
+        assert_receive {:session, ^reopened, :store, {:saved, :state}}, 2000
+      end
 
       {:ok, _tree, state_map} = Store.load(tmp_store(ctx), "s1")
       assert state_map[:system] == "New"
