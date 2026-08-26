@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-26
+
 ### Added
 
 - **`prompt/3` accepts a user `%Omni.Message{}`** — on both `Omni.Agent` and `Omni.Session`, alongside the existing string and content-block forms. A non-user message is rejected. `handle_turn/2`'s `{:continue, content, state}` accepts the same forms.
